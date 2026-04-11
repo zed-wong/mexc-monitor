@@ -32,7 +32,8 @@ export function runSchema(db: Database): void {
     );
 
     CREATE TABLE IF NOT EXISTS runtime_state (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
+      account_name TEXT NOT NULL,
+      asset TEXT NOT NULL,
       paused INTEGER NOT NULL DEFAULT 0,
       last_balance TEXT,
       last_check_at TEXT,
@@ -41,11 +42,13 @@ export function runSchema(db: Database): void {
       withdraw_in_progress INTEGER NOT NULL DEFAULT 0,
       api_status TEXT NOT NULL DEFAULT 'unknown',
       last_error TEXT,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_name, asset)
     );
 
     CREATE TABLE IF NOT EXISTS withdraw_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_name TEXT NOT NULL,
       created_at TEXT NOT NULL,
       operation_id TEXT NOT NULL,
       exchange_id TEXT NOT NULL,
@@ -63,6 +66,8 @@ export function runSchema(db: Database): void {
 
     CREATE TABLE IF NOT EXISTS event_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_name TEXT,
+      asset TEXT,
       created_at TEXT NOT NULL,
       level TEXT NOT NULL CHECK (level IN ('debug', 'info', 'warn', 'error')),
       type TEXT NOT NULL,

@@ -48,8 +48,6 @@ export function createAppContext(): AppContext {
   const eventLogRepo = new EventLogRepo(db);
   const withdrawHistoryRepo = new WithdrawHistoryRepo(db);
 
-  runtimeRepo.init();
-
   const configService = new ConfigService(accountRepo, assetRuleRepo);
   const credentialService = new CredentialService(configService);
   const auditService = new AuditService(eventLogRepo, withdrawHistoryRepo);

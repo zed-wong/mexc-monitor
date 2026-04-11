@@ -1,5 +1,4 @@
 export type AppMode = 'dry_run' | 'live';
-export type AppScreen = 'unlock' | 'setup' | 'dashboard' | 'settings' | 'history' | 'logs';
 export type ApiStatus = 'unknown' | 'healthy' | 'degraded' | 'error';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type WithdrawStatus = 'simulated' | 'success' | 'failed' | 'rejected';
@@ -42,8 +41,17 @@ export interface RuntimeState {
   lastError?: string;
 }
 
+export interface RuntimeScope {
+  accountName: string;
+  asset: string;
+}
+
+export interface ScopedRuntimeState extends RuntimeScope, RuntimeState {}
+
 export interface EventLog {
   id?: number;
+  accountName?: string;
+  asset?: string;
   createdAt: string;
   level: LogLevel;
   type: string;
@@ -53,6 +61,7 @@ export interface EventLog {
 
 export interface WithdrawHistoryItem {
   id?: number;
+  accountName: string;
   operationId: string;
   createdAt: string;
   exchangeId: string;
@@ -82,14 +91,3 @@ export type RiskDecision =
         | 'invalid_config'
         | 'locked';
     };
-
-export interface AppState {
-  screen: AppScreen;
-  settings: AssetRule | null;
-  runtime: RuntimeState;
-  recentLogs: EventLog[];
-  recentHistory: WithdrawHistoryItem[];
-  unlocked: boolean;
-  statusMessage?: string;
-  selectedSettingsField?: keyof AssetRule;
-}

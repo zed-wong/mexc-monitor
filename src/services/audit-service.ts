@@ -9,8 +9,16 @@ export class AuditService {
     private readonly withdrawHistoryRepo: WithdrawHistoryRepo,
   ) {}
 
-  log(level: EventLog['level'], type: string, message: string, meta?: unknown): void {
+  log(
+    level: EventLog['level'],
+    type: string,
+    message: string,
+    meta?: unknown,
+    scope?: { accountName?: string; asset?: string },
+  ): void {
     this.eventLogRepo.append({
+      accountName: scope?.accountName,
+      asset: scope?.asset,
       createdAt: nowIso(),
       level,
       type,

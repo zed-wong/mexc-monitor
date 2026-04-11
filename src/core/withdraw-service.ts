@@ -15,17 +15,19 @@ export class WithdrawService {
   ) {}
 
   async execute(account: AccountConfig, rule: AssetRule, runtime: RuntimeState, credentials: Credentials, amount: string): Promise<void> {
+    const scope = { accountName: account.name, asset: rule.asset };
     const operationId = crypto.randomUUID();
     const createdAt = nowIso();
     const addressMasked = maskAddress(rule.withdrawAddress);
 
-    this.runtimeService.updateRuntime({
+    this.runtimeService.updateRuntime(scope, {
       ...runtime,
       withdrawInProgress: true,
     });
 
     if (account.mode === 'dry_run') {
       const item: WithdrawHistoryItem = {
+        accountName: account.name,
         createdAt,
         operationId,
         exchangeId: account.exchangeId,
@@ -39,8 +41,8 @@ export class WithdrawService {
       };
 
       this.auditService.recordWithdraw(item);
-      this.auditService.log('info', 'withdraw.simulated', `Simulated withdraw ${amount} ${rule.asset}`);
-      this.runtimeService.updateRuntime({
+      this.auditService.log('info', 'withdraw.simulated', `Simulated withdraw ${amount} ${rule.asset}`, undefined, scope);
+      this.runtimeService.updateRuntime(scope, {
         ...runtime,
         withdrawInProgress: false,
         cooldownUntil: new Date(Date.now() + account.withdrawCooldownMs).toISOString(),
@@ -59,6 +61,7 @@ export class WithdrawService {
       });
 
       this.auditService.recordWithdraw({
+        accountName: account.name,
         createdAt,
         operationId,
         exchangeId: account.exchangeId,
@@ -71,8 +74,8 @@ export class WithdrawService {
         txid: result.txid,
         rawResponseJson: JSON.stringify(result.raw),
       });
-      this.auditService.log('info', 'withdraw.success', `Withdraw succeeded for ${amount} ${rule.asset}`);
-      this.runtimeService.updateRuntime({
+      this.auditService.log('info', 'withdraw.success', `Withdraw succeeded for ${amount} ${rule.asset}`, undefined, scope);
+      this.runtimeService.updateRuntime(scope, {
         ...runtime,
         withdrawInProgress: false,
         cooldownUntil: new Date(Date.now() + account.withdrawCooldownMs).toISOString(),
@@ -80,6 +83,7 @@ export class WithdrawService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.auditService.recordWithdraw({
+        accountName: account.name,
         createdAt,
         operationId,
         exchangeId: account.exchangeId,
@@ -91,8 +95,8 @@ export class WithdrawService {
         status: 'failed',
         errorMessage: message,
       });
-      this.auditService.log('error', 'withdraw.failed', message);
-      this.runtimeService.updateRuntime({
+      this.auditService.log('error', 'withdraw.failed', message, undefined, scope);
+      this.runtimeService.updateRuntime(scope, {
         ...runtime,
         withdrawInProgress: false,
         lastError: message,

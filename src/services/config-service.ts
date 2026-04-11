@@ -4,6 +4,25 @@ import type { AccountConfig, AssetRule } from '../core/types';
 import type { StoredSecrets } from '../db/types';
 import type { AccountRepo } from '../db/repo/account-repo';
 import type { AssetRuleRepo } from '../db/repo/asset-rule-repo';
+import { decimal } from '../utils/decimal';
+
+const amountString = z.string().min(1).refine((value) => {
+  try {
+    return decimal(value).gte(0);
+  } catch {
+    return false;
+  }
+}, {
+  message: 'must be a valid non-negative decimal string',
+});
+
+const accountSchema = z.object({
+  name: z.string().min(1),
+  exchangeId: z.string().min(1),
+  checkIntervalMs: z.number().int().positive(),
+  withdrawCooldownMs: z.number().int().nonnegative(),
+  mode: z.enum(['dry_run', 'live']),
+});
 
 const assetRuleSchema = z.object({
   exchangeId: z.string().min(1),
@@ -11,13 +30,15 @@ const assetRuleSchema = z.object({
   network: z.string().min(1),
   withdrawAddress: z.string().min(1),
   withdrawTag: z.string().optional(),
-  targetBalance: z.string().min(1),
-  maxBalance: z.string().min(1),
-  minWithdrawAmount: z.string().min(1),
-  maxWithdrawAmount: z.string().min(1),
+  targetBalance: amountString,
+  maxBalance: amountString,
+  minWithdrawAmount: amountString,
+  maxWithdrawAmount: amountString,
   enabled: z.boolean(),
-}).refine((value) => Number(value.targetBalance) <= Number(value.maxBalance), {
+}).refine((value) => decimal(value.targetBalance).lte(value.maxBalance), {
   message: 'targetBalance must be <= maxBalance',
+}).refine((value) => decimal(value.minWithdrawAmount).lte(value.maxWithdrawAmount), {
+  message: 'minWithdrawAmount must be <= maxWithdrawAmount',
 });
 
 export class ConfigService {
@@ -62,6 +83,7 @@ export class ConfigService {
   }
 
   saveAccount(account: AccountConfig, secrets: StoredSecrets): void {
+    accountSchema.parse(account);
     this.accountRepo.save(account, secrets);
   }
 

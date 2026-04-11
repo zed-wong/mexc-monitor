@@ -9,13 +9,14 @@ export class WithdrawHistoryRepo {
   append(item: WithdrawHistoryItem): void {
     this.db.prepare(
       `INSERT INTO withdraw_history (
-        created_at, operation_id, exchange_id, mode, asset, network, amount,
+        account_name, created_at, operation_id, exchange_id, mode, asset, network, amount,
         address_masked, status, txid, reason, error_message, raw_response_json
       ) VALUES (
-        @created_at, @operation_id, @exchange_id, @mode, @asset, @network, @amount,
+        @account_name, @created_at, @operation_id, @exchange_id, @mode, @asset, @network, @amount,
         @address_masked, @status, @txid, @reason, @error_message, @raw_response_json
       )`,
     ).run({
+      account_name: item.accountName,
       created_at: item.createdAt,
       operation_id: item.operationId,
       exchange_id: item.exchangeId,
@@ -32,13 +33,34 @@ export class WithdrawHistoryRepo {
     });
   }
 
-  listRecent(limit = LOG_LIMIT): WithdrawHistoryItem[] {
+  listRecent(options?: { limit?: number; accountName?: string; asset?: string; status?: WithdrawHistoryItem['status'] }): WithdrawHistoryItem[] {
+    const where: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (options?.accountName) {
+      where.push('account_name = ?');
+      params.push(options.accountName);
+    }
+
+    if (options?.asset) {
+      where.push('asset = ?');
+      params.push(options.asset);
+    }
+
+    if (options?.status) {
+      where.push('status = ?');
+      params.push(options.status);
+    }
+
+    const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limit = options?.limit ?? LOG_LIMIT;
     const rows = this.db
-      .prepare(`SELECT * FROM withdraw_history ORDER BY id DESC LIMIT ?`)
-      .all(limit) as Record<string, unknown>[];
+      .prepare(`SELECT * FROM withdraw_history ${clause} ORDER BY id DESC LIMIT ?`)
+      .all(...params, limit) as Record<string, unknown>[];
 
     return rows.map((row) => ({
       id: Number(row.id),
+      accountName: String(row.account_name),
       createdAt: String(row.created_at),
       operationId: String(row.operation_id),
       exchangeId: String(row.exchange_id),

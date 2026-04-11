@@ -1,7 +1,6 @@
 import type { AccountConfig, AssetRule, Credentials } from './types';
 import { computeWithdrawAmount } from './amount-policy';
 import { RiskControl } from './risk-control';
-import type { StateStore } from './state-store';
 import type { ExchangeAdapter } from '../exchange/types';
 import type { AuditService } from '../services/audit-service';
 import type { RuntimeService } from '../services/runtime-service';
@@ -17,7 +16,6 @@ export class Monitor {
     private readonly runtimeService: RuntimeService,
     private readonly withdrawService: WithdrawService,
     private readonly auditService: AuditService,
-    private readonly store: StateStore,
     private readonly riskControl: RiskControl,
   ) {}
 
@@ -27,7 +25,10 @@ export class Monitor {
     }
 
     this.running = true;
-    this.auditService.log('info', 'monitor.started', 'Monitor started');
+    this.auditService.log('info', 'monitor.started', 'Monitor started', undefined, {
+      accountName: account.name,
+      asset: rule.asset,
+    });
     this.loopPromise = (async () => {
       while (this.running) {
         await this.tick(account, rule, credentials);
@@ -41,7 +42,8 @@ export class Monitor {
   }
 
   async tick(account: AccountConfig, rule: AssetRule, credentials: Credentials): Promise<void> {
-    const runtime = this.runtimeService.getRuntime();
+    const scope = { accountName: account.name, asset: rule.asset };
+    const runtime = this.runtimeService.getRuntime(scope);
     const now = nowIso();
 
     try {
@@ -54,12 +56,11 @@ export class Monitor {
         lastSuccessCheckAt: now,
         lastError: undefined,
       };
-      this.runtimeService.updateRuntime(nextRuntime);
-      this.store.setRuntime(nextRuntime);
+      this.runtimeService.updateRuntime(scope, nextRuntime);
       const amount = computeWithdrawAmount(balance, rule);
 
       if (!amount) {
-        this.auditService.log('info', 'monitor.tick.success', `Account balance ${balance} ${rule.asset}`);
+        this.auditService.log('info', 'monitor.tick.success', `Account balance ${balance} ${rule.asset}`, undefined, scope);
         return;
       }
 
@@ -72,7 +73,7 @@ export class Monitor {
       });
 
       if (!decision.allowed) {
-        this.auditService.log('warn', 'withdraw.rejected', `Withdraw rejected: ${decision.reason}`);
+        this.auditService.log('warn', 'withdraw.rejected', `Withdraw rejected: ${decision.reason}`, undefined, scope);
         return;
       }
 
@@ -85,9 +86,8 @@ export class Monitor {
         lastCheckAt: now,
         lastError: message,
       };
-      this.runtimeService.updateRuntime(nextRuntime);
-      this.store.setRuntime(nextRuntime);
-      this.auditService.log('error', 'monitor.tick.failed', message);
+      this.runtimeService.updateRuntime(scope, nextRuntime);
+      this.auditService.log('error', 'monitor.tick.failed', message, undefined, scope);
     }
   }
 }
