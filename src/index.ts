@@ -19,10 +19,30 @@ Examples:
   mexc-monitor watch-withdraw -a main --password '***' --interval-ms 30000
 `;
 
+function formatValue(value: unknown): string {
+  return String(value ?? '-');
+}
+
+function truncateValue(value: unknown, maxLength = 80): string {
+  const text = formatValue(value);
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function printDivider(): void {
+  process.stdout.write(`${'-'.repeat(72)}\n`);
+}
+
+function printEmptyState(message: string): void {
+  printSection('No data', [message]);
+}
+
 function printKeyValue(title: string, data: Record<string, unknown>): void {
   process.stdout.write(`${title}\n`);
   for (const [key, value] of Object.entries(data)) {
-    process.stdout.write(`  ${key.padEnd(20)} ${String(value ?? '-')}\n`);
+    process.stdout.write(`  ${key.padEnd(20)} ${formatValue(value)}\n`);
   }
 }
 
@@ -33,17 +53,258 @@ function printSection(title: string, lines: string[]): void {
   }
 }
 
-function printRuntimeRow(accountName: string, asset: string, runtime: {
+function printRuntimeCard(accountName: string, asset: string, runtime: {
   apiStatus: string;
   paused: boolean;
   withdrawInProgress: boolean;
   lastBalance?: string;
   cooldownUntil?: string;
   lastError?: string;
+  lastCheckAt?: string;
+  lastSuccessCheckAt?: string;
 }): void {
-  process.stdout.write(
-    `${accountName.padEnd(16)} ${asset.padEnd(12)} api=${runtime.apiStatus.padEnd(7)} paused=${String(runtime.paused).padEnd(5)} withdrawing=${String(runtime.withdrawInProgress).padEnd(5)} balance=${runtime.lastBalance ?? '-'} cooldownUntil=${runtime.cooldownUntil ?? '-'} lastError=${runtime.lastError ?? '-'}\n`,
+  printDivider();
+  printSection(`${accountName}/${asset}`, [
+    `API status          ${formatValue(runtime.apiStatus)}`,
+    `Last balance        ${formatValue(runtime.lastBalance)}`,
+    `Paused              ${runtime.paused ? 'yes' : 'no'}`,
+    `Withdraw active     ${runtime.withdrawInProgress ? 'yes' : 'no'}`,
+    `Cooldown until      ${formatValue(runtime.cooldownUntil)}`,
+    `Last check          ${formatValue(runtime.lastCheckAt)}`,
+    `Last success check  ${formatValue(runtime.lastSuccessCheckAt)}`,
+    `Last error          ${truncateValue(runtime.lastError, 120)}`,
+  ]);
+}
+
+function printLogEntry(item: {
+  level: string;
+  createdAt: string;
+  accountName?: string;
+  asset?: string;
+  type: string;
+  message: string;
+}): void {
+  printDivider();
+  printSection(`[${item.level.toUpperCase()}] ${item.createdAt}`, [
+    `Scope   ${formatValue(item.accountName)}/${formatValue(item.asset)}`,
+    `Type    ${item.type}`,
+    `Detail  ${truncateValue(item.message, 120)}`,
+  ]);
+}
+
+function printHistoryEntry(item: {
+  status: string;
+  createdAt: string;
+  accountName: string;
+  asset: string;
+  amount: string;
+  network: string;
+  addressMasked: string;
+  mode: string;
+  txid?: string;
+  reason?: string;
+  errorMessage?: string;
+}): void {
+  printDivider();
+  printSection(`[${item.status.toUpperCase()}] ${item.createdAt}`, [
+    `Scope   ${item.accountName}/${item.asset}`,
+    `Amount  ${item.amount} via ${item.network}`,
+    `Target  ${item.addressMasked}`,
+    `Mode    ${item.mode}`,
+    `Txid    ${truncateValue(item.txid, 96)}`,
+    `Reason  ${truncateValue(item.reason, 120)}`,
+    `Error   ${truncateValue(item.errorMessage, 120)}`,
+  ]);
+}
+
+function printWithdrawPlan(account: AccountConfig, rule: AssetRule, balance: string, amount: string): void {
+  printDivider();
+  printSection('Withdraw plan', [
+    `Account            ${account.name}`,
+    `Asset              ${rule.asset}`,
+    `Mode               ${account.mode}`,
+    `Current balance    ${balance}`,
+    `Max balance        ${rule.maxBalance}`,
+    `Target balance     ${rule.targetBalance}`,
+    `Planned amount     ${amount}`,
+    `Network            ${rule.network}`,
+    `Address            ${rule.withdrawAddress}`,
+    `Confirm live       ${account.mode === 'live' ? 'required and provided' : 'not required (dry_run)'}`,
+  ]);
+}
+
+function getRecommendedNextSteps(
+  context: ReturnType<typeof createAppContext>,
+  accountName?: string,
+): string[] {
+  const accounts = accountName
+    ? context.configService.listAccounts().filter((item) => item.name === accountName)
+    : context.configService.listAccounts();
+
+  if (accountName && accounts.length === 0) {
+    return [`Create the account first: mexc-monitor account set -a ${accountName} --password '***' --api-key '***' --api-secret '***'`];
+  }
+
+  if (accounts.length === 0) {
+    return [
+      "Create an account in dry-run mode: mexc-monitor account set -a main --password '***' --api-key '***' --api-secret '***'",
+      "Then verify exchange access: mexc-monitor account test -a main --password '***'",
+    ];
+  }
+
+  const steps: string[] = [];
+
+  for (const account of accounts) {
+    const rules = context.configService.listAssetRules(account.name);
+    const enabledRules = rules.filter((item) => item.enabled);
+    const runtimeRows = context.runtimeService.listRuntime({ accountName: account.name });
+
+    if (rules.length === 0) {
+      steps.push(`Add a withdrawal rule for ${account.name}: mexc-monitor asset-rule add -a ${account.name} --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200`);
+      continue;
+    }
+
+    if (runtimeRows.length === 0) {
+      steps.push(`Check live balances for ${account.name}: mexc-monitor balance -a ${account.name} --password '***'`);
+      steps.push(`Run one withdraw simulation for ${account.name}: mexc-monitor withdraw -a ${account.name} --password '***'`);
+      continue;
+    }
+
+    if (enabledRules.length === 0) {
+      steps.push(`Enable at least one rule for ${account.name}: mexc-monitor asset-rule enable -a ${account.name} --asset <asset>`);
+      continue;
+    }
+
+    steps.push(`Inspect current runtime for ${account.name}: mexc-monitor status -a ${account.name}`);
+    steps.push(`Start continuous monitoring for ${account.name}: mexc-monitor watch-withdraw -a ${account.name} --password '***' --interval-ms ${account.checkIntervalMs}`);
+
+    if (account.mode === 'dry_run') {
+      steps.push(`Only after dry-run results look correct, switch ${account.name} to live mode and use --confirm-live for real withdrawals`);
+    }
+  }
+
+  return Array.from(new Set(steps));
+}
+
+function printDoctorSummary(context: ReturnType<typeof createAppContext>, accountName?: string): void {
+  const accounts = accountName
+    ? context.configService.listAccounts().filter((item) => item.name === accountName)
+    : context.configService.listAccounts();
+
+  if (accountName && accounts.length === 0) {
+    printEmptyState(`No account named ${accountName} is configured.`);
+    return;
+  }
+
+  const totalRules = accounts.reduce((sum, account) => sum + context.configService.listAssetRules(account.name).length, 0);
+  const enabledRules = accounts.reduce(
+    (sum, account) => sum + context.configService.listAssetRules(account.name).filter((item) => item.enabled).length,
+    0,
   );
+  const runtimeRows = accounts.reduce(
+    (sum, account) => sum + context.runtimeService.listRuntime({ accountName: account.name }).length,
+    0,
+  );
+  const errorRuntimeRows = accounts.reduce(
+    (sum, account) => sum + context.runtimeService.listRuntime({ accountName: account.name }).filter((item) => item.apiStatus === 'error').length,
+    0,
+  );
+  const pausedRuntimeRows = accounts.reduce(
+    (sum, account) => sum + context.runtimeService.listRuntime({ accountName: account.name }).filter((item) => item.paused).length,
+    0,
+  );
+  const liveAccounts = accounts.filter((item) => item.mode === 'live').length;
+
+  printSection('Doctor summary', [
+    `accounts=${accounts.length}`,
+    `rules.total=${totalRules}`,
+    `rules.enabled=${enabledRules}`,
+    `runtime.rows=${runtimeRows}`,
+    `runtime.error=${errorRuntimeRows}`,
+    `runtime.paused=${pausedRuntimeRows}`,
+    `accounts.live=${liveAccounts}`,
+    `filter.account=${accountName ?? '*'}`,
+  ]);
+
+  for (const account of accounts) {
+    const rules = context.configService.listAssetRules(account.name);
+    const runtimes = context.runtimeService.listRuntime({ accountName: account.name });
+    const enabledRuleCount = rules.filter((item) => item.enabled).length;
+    const erroredRuntimes = runtimes.filter((item) => item.apiStatus === 'error');
+    const pausedRuntimes = runtimes.filter((item) => item.paused);
+    const unhealthyRuntime = erroredRuntimes[0];
+    const riskNotes: string[] = [];
+
+    if (rules.length === 0) {
+      riskNotes.push('No withdrawal rules configured yet');
+    }
+    if (rules.length > 0 && enabledRuleCount === 0) {
+      riskNotes.push('All withdrawal rules are disabled');
+    }
+    if (runtimes.length === 0 && enabledRuleCount > 0) {
+      riskNotes.push('Rules exist but no runtime checks have been recorded yet');
+    }
+    if (account.mode === 'live') {
+      riskNotes.push('Live mode is enabled; every real withdraw still requires --confirm-live');
+    }
+    if (pausedRuntimes.length > 0) {
+      riskNotes.push(`${pausedRuntimes.length} runtime scope(s) are paused`);
+    }
+    if (erroredRuntimes.length > 0) {
+      riskNotes.push(`${erroredRuntimes.length} runtime scope(s) have API errors`);
+    }
+
+    printDivider();
+    printSection(`Account ${account.name}`, [
+      `Mode               ${account.mode}`,
+      `Check interval     ${account.checkIntervalMs} ms`,
+      `Cooldown           ${account.withdrawCooldownMs} ms`,
+      `Rules              ${rules.length} total / ${enabledRuleCount} enabled`,
+      `Runtime rows       ${runtimes.length}`,
+      `Priority           ${
+        erroredRuntimes.length > 0 ? 'fix errors first'
+          : rules.length === 0 ? 'finish setup'
+            : runtimes.length === 0 ? 'run first check'
+              : account.mode === 'live' ? 'watch closely'
+                : 'ready for monitoring'
+      }`,
+      `Risk               ${riskNotes[0] ?? 'No immediate operator risk detected'}`,
+      `Last error         ${truncateValue(unhealthyRuntime?.lastError, 120)}`,
+      `Next step          ${getRecommendedNextSteps(context, account.name)[0] ?? 'No action needed'}`,
+    ]);
+  }
+
+  const globalRisks: string[] = [];
+  if (accounts.length === 0) {
+    globalRisks.push('No accounts are configured');
+  }
+  if (totalRules === 0 && accounts.length > 0) {
+    globalRisks.push('Accounts exist, but there are no withdrawal rules yet');
+  }
+  if (enabledRules === 0 && totalRules > 0) {
+    globalRisks.push('Rules exist, but none are enabled');
+  }
+  if (errorRuntimeRows > 0) {
+    globalRisks.push(`${errorRuntimeRows} runtime scope(s) are currently failing`);
+  }
+  if (runtimeRows === 0 && enabledRules > 0) {
+    globalRisks.push('Enabled rules exist, but no runtime checks have been recorded yet');
+  }
+
+  if (globalRisks.length > 0) {
+    printDivider();
+    printSection('Risk reminders', globalRisks.map((item, index) => `${index + 1}. ${item}`));
+  }
+
+  printDivider();
+  printSection('Recommended next steps', getRecommendedNextSteps(context, accountName).map((item, index) => `${index + 1}. ${item}`));
+}
+
+function printWatchCycleHeader(title: string, details: string[]): void {
+  process.stdout.write(`\n[${new Date().toISOString()}] ${title}\n`);
+  for (const detail of details) {
+    process.stdout.write(`  ${detail}\n`);
+  }
 }
 
 function assertLiveConfirmation(account: AccountConfig, confirmLive?: boolean): void {
@@ -156,15 +417,27 @@ async function runWatchLoop(
   autoWithdraw: boolean,
 ): Promise<void> {
   const exchange = await initExchange(credentials);
+  let cycle = 0;
 
   for (;;) {
+    cycle += 1;
     const balances = await exchange.fetchAllFreeBalances();
-    process.stdout.write(`\n[${new Date().toISOString()}]\n`);
+    const enabledRuleCount = assetRules.filter((item) => item.enabled).length;
+    printWatchCycleHeader(`watch cycle account=${account.name}`, [
+      `cycle=${cycle}`,
+      `assets=${balances.length}`,
+      `enabledRules=${enabledRuleCount}`,
+      `mode=${account.mode}`,
+      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
+    ]);
     for (const item of balances) {
-      process.stdout.write(`${item.asset.padEnd(12)} ${item.free}\n`);
+      process.stdout.write(`  ${item.asset.padEnd(12)} ${item.free}\n`);
     }
 
     if (autoWithdraw) {
+      if (enabledRuleCount === 0) {
+        process.stdout.write('  No enabled asset rules. Skipping withdraw checks.\n');
+      }
       for (const rule of assetRules.filter((item) => item.enabled)) {
         const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
         const riskControl = new RiskControl();
@@ -173,6 +446,7 @@ async function runWatchLoop(
       }
     }
 
+    process.stdout.write(`  Sleeping ${account.checkIntervalMs} ms before next cycle.\n`);
     await sleep(account.checkIntervalMs);
   }
 }
@@ -183,19 +457,30 @@ async function runWatchAll(
   intervalMs?: number,
   autoWithdraw?: boolean,
 ): Promise<void> {
+  let cycle = 0;
   for (;;) {
+    cycle += 1;
+    printWatchCycleHeader('watch-all cycle', [
+      `cycle=${cycle}`,
+      `accounts=${context.configService.listAccounts().length}`,
+      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
+      `intervalMs=${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs}`,
+    ]);
     for (const account of context.configService.listAccounts()) {
       const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
       const credentials = context.credentialService.unlock(account.name, password);
       const exchange = await initExchange(credentials);
       const balances = await exchange.fetchAllFreeBalances();
-      process.stdout.write(`\n[${new Date().toISOString()}] account=${account.name}\n`);
+      process.stdout.write(`  account=${account.name} mode=${account.mode} assets=${balances.length}\n`);
       for (const item of balances) {
-        process.stdout.write(`${item.asset.padEnd(12)} ${item.free}\n`);
+        process.stdout.write(`    ${item.asset.padEnd(12)} ${item.free}\n`);
       }
 
       if (autoWithdraw) {
         const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+        if (rules.length === 0) {
+          process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
+        }
         for (const rule of rules) {
           const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
           const riskControl = new RiskControl();
@@ -205,6 +490,7 @@ async function runWatchAll(
       }
     }
 
+    process.stdout.write(`  Sleeping ${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs} ms before next cycle.\n`);
     await sleep(intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs);
   }
 }
@@ -221,10 +507,17 @@ async function runSingleWithdrawCheck(
   const amount = computeWithdrawAmount(balance, { ...rule, ...account });
 
   if (!amount) {
-    process.stdout.write(`No withdraw needed. ${rule.asset} balance=${balance}\n`);
+    printDivider();
+    printSection(`No withdraw needed for ${account.name}/${rule.asset}`, [
+      `Current balance    ${balance}`,
+      `Max balance        ${rule.maxBalance}`,
+      `Target balance     ${rule.targetBalance}`,
+      'Decision           balance is within the configured threshold',
+    ]);
     return;
   }
 
+  printWithdrawPlan(account, rule, balance, amount);
   const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
   const riskControl = new RiskControl();
   const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
@@ -248,18 +541,17 @@ async function main(): Promise<void> {
 
   program
     .command('setup')
-    .description('Print the recommended first-run CLI flow')
+    .description('Inspect current readiness and print the recommended next steps')
     .action(() => {
-      printSection('Recommended flow', [
-        "1. Create an account in dry-run mode: mexc-monitor account set -a main --password '***' --api-key '***' --api-secret '***'",
-        "2. Test API access: mexc-monitor account test -a main --password '***'",
-        "3. Add a rule: mexc-monitor asset-rule add -a main --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200",
-        "4. Inspect config: mexc-monitor account show -a main && mexc-monitor asset-rule list -a main",
-        "5. Check balances: mexc-monitor balance -a main --password '***'",
-        "6. Run one dry-run withdraw check: mexc-monitor withdraw -a main --password '***'",
-        "7. Start continuous monitoring: mexc-monitor watch-withdraw -a main --password '***' --interval-ms 30000",
-        '8. Only switch to --mode live after dry-run results look correct and exchange withdrawal permissions are verified',
-      ]);
+      printDoctorSummary(context);
+    });
+
+  program
+    .command('doctor')
+    .description('Check current configuration state and tell the operator what to do next')
+    .option('-a, --account <account>')
+    .action(({ account }: { account?: string }) => {
+      printDoctorSummary(context, account);
     });
 
   program
@@ -274,13 +566,19 @@ async function main(): Promise<void> {
       });
 
       if (rows.length === 0) {
-        process.stdout.write('No runtime state found.\n');
+        printEmptyState('No runtime state found for the current filter.');
         return;
       }
 
+      printSection('Runtime status', [
+        `rows=${rows.length}`,
+        `filter.account=${account ?? '*'}`,
+        `filter.asset=${asset ?? '*'}`,
+      ]);
       for (const row of rows) {
-        printRuntimeRow(row.accountName, row.asset, row);
+        printRuntimeCard(row.accountName, row.asset, row);
       }
+      printDivider();
     });
 
   const accountCommand = program.command('account').description('Manage exchange account');
@@ -314,6 +612,7 @@ async function main(): Promise<void> {
         `mode=${mode}`,
         `intervalMs=${intervalMs}`,
         `withdrawCooldownMs=${withdrawCooldownMs}`,
+        `next=mexc-monitor account test -a ${account} --password '***'`,
       ]);
     });
 
@@ -419,6 +718,7 @@ async function main(): Promise<void> {
           `targetBalance=${rule.targetBalance}`,
           `maxBalance=${rule.maxBalance}`,
           `enabled=${rule.enabled}`,
+          `next=mexc-monitor withdraw -a ${rule.accountName} --password '***'`,
         ]);
       });
     });
@@ -504,16 +804,28 @@ async function main(): Promise<void> {
     .option('--level <level>')
     .option('--limit <limit>', '', '50')
     .action(({ account, asset, level, limit }: { account?: string; asset?: string; level?: 'debug' | 'info' | 'warn' | 'error'; limit: string }) => {
-      for (const item of context.eventLogRepo.listRecent({
+      const items = context.eventLogRepo.listRecent({
         accountName: account,
         asset,
         level,
         limit: parsePositiveIntegerOption('limit', limit),
-      })) {
-        process.stdout.write(
-          `[${item.level}] ${item.createdAt} account=${item.accountName ?? '-'} asset=${item.asset ?? '-'} ${item.type} ${item.message}\n`,
-        );
+      });
+
+      if (items.length === 0) {
+        printEmptyState('No audit logs matched the current filter.');
+        return;
       }
+
+      printSection('Audit logs', [
+        `rows=${items.length}`,
+        `filter.account=${account ?? '*'}`,
+        `filter.asset=${asset ?? '*'}`,
+        `filter.level=${level ?? '*'}`,
+      ]);
+      for (const item of items) {
+        printLogEntry(item);
+      }
+      printDivider();
     });
 
   program.command('history')
@@ -525,27 +837,29 @@ async function main(): Promise<void> {
     .action(({ account, asset, status, limit }: {
       account?: string; asset?: string; status?: 'simulated' | 'success' | 'failed' | 'rejected'; limit: string;
     }) => {
-      for (const item of context.withdrawHistoryRepo.listRecent({
+      const items = context.withdrawHistoryRepo.listRecent({
         accountName: account,
         asset,
         status,
         limit: parsePositiveIntegerOption('limit', limit),
-      })) {
-      process.stdout.write(
-        `[${item.status}] ${item.createdAt} account=${item.accountName} ${item.asset} ${item.amount} ${item.network} ${item.addressMasked}`,
-      );
-      if (item.txid) {
-        process.stdout.write(` txid=${item.txid}`);
+      });
+
+      if (items.length === 0) {
+        printEmptyState('No withdraw history matched the current filter.');
+        return;
       }
-      if (item.reason) {
-        process.stdout.write(` reason=${item.reason}`);
+
+      printSection('Withdraw history', [
+        `rows=${items.length}`,
+        `filter.account=${account ?? '*'}`,
+        `filter.asset=${asset ?? '*'}`,
+        `filter.status=${status ?? '*'}`,
+      ]);
+      for (const item of items) {
+        printHistoryEntry(item);
       }
-      if (item.errorMessage) {
-        process.stdout.write(` error=${item.errorMessage}`);
-      }
-      process.stdout.write('\n');
-    }
-  });
+      printDivider();
+    });
 
   program
     .command('balance')
