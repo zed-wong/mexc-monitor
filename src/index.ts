@@ -423,6 +423,46 @@ async function promptHiddenSecret(label: string): Promise<string> {
   });
 }
 
+async function promptLine(label: string): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('Interactive CLI entry requires a TTY. Re-run in a terminal or pass the required options explicitly.');
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    return await new Promise<string>((resolve) => {
+      rl.question(label, resolve);
+    });
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptRequiredLine(label: string): Promise<string> {
+  const value = (await promptLine(label)).trim();
+  if (!value) {
+    throw new Error(`${label.trim()} cannot be empty.`);
+  }
+  return value;
+}
+
+async function promptOptionalLine(label: string, defaultValue: string): Promise<string> {
+  const value = (await promptLine(`${label} [${defaultValue}]: `)).trim();
+  return value || defaultValue;
+}
+
+async function promptMode(defaultValue: 'dry_run' | 'live'): Promise<'dry_run' | 'live'> {
+  const value = (await promptOptionalLine('Account mode (dry_run/live)', defaultValue)).trim();
+  if (value !== 'dry_run' && value !== 'live') {
+    throw new Error('Account mode must be dry_run or live.');
+  }
+  return value;
+}
+
 async function resolveMasterPassword(masterPassword: string | undefined, label: string): Promise<string> {
   const resolved = masterPassword ?? await promptHiddenSecret(label);
   if (!resolved) {
@@ -822,7 +862,7 @@ async function main(): Promise<void> {
 
 
   async function saveAccountFromPrompt(options: {
-    account: string;
+    account?: string;
     masterPassword?: string;
     password?: string;
     intervalMs?: string;
@@ -832,22 +872,32 @@ async function main(): Promise<void> {
   }): Promise<void> {
     const { account, masterPassword, password, intervalMs, withdrawCooldownMs, mode, updateCredentials } = options;
 
+    const resolvedAccount = account ?? await promptRequiredLine('Account name: ');
+    const existingAccount = context.configService.getAccount(resolvedAccount);
+    const existingSecrets = context.configService.getSecretsForAccount(resolvedAccount);
+    const isNewAccount = !existingAccount;
+    const baseAccount = existingAccount ?? DEFAULT_ACCOUNT;
+
     if (mode && mode !== 'dry_run' && mode !== 'live') {
       throw new Error('--mode must be dry_run or live');
     }
 
-    const existingAccount = context.configService.getAccount(account);
-    const existingSecrets = context.configService.getSecretsForAccount(account);
-    const isNewAccount = !existingAccount;
     const wantsCredentialUpdate = isNewAccount || Boolean(updateCredentials);
+    const resolvedMode = mode ?? await promptMode(baseAccount.mode);
+    const resolvedIntervalMs = intervalMs
+      ? parsePositiveIntegerOption('interval-ms', intervalMs)
+      : parsePositiveIntegerOption('interval-ms', await promptOptionalLine('Check interval in milliseconds', String(baseAccount.checkIntervalMs)));
+    const resolvedWithdrawCooldownMs = withdrawCooldownMs
+      ? parseIntegerOption('withdraw-cooldown-ms', withdrawCooldownMs)
+      : parseIntegerOption('withdraw-cooldown-ms', await promptOptionalLine('Withdraw cooldown in milliseconds', String(baseAccount.withdrawCooldownMs)));
 
     const providedMasterPassword = resolveMasterPasswordOption({ masterPassword, password });
     const resolvedPassword = wantsCredentialUpdate
-      ? await resolveMasterPassword(providedMasterPassword, 'CLI master password for ' + account + ': ')
+      ? await resolveMasterPassword(providedMasterPassword, 'CLI master password for ' + resolvedAccount + ': ')
       : undefined;
 
     const promptedCredentials = wantsCredentialUpdate
-      ? await promptExchangeCredentials(account)
+      ? await promptExchangeCredentials(resolvedAccount)
       : undefined;
 
     const sealed = wantsCredentialUpdate
@@ -855,24 +905,23 @@ async function main(): Promise<void> {
       : existingSecrets;
 
     if (!sealed) {
-      throw new Error(`Credentials not configured for account: ${account}. Re-run with: mexc-monitor account add -a ${account} --update-credentials`);
+      throw new Error(`Credentials not configured for account: ${resolvedAccount}. Re-run with: mexc-monitor account add -a ${resolvedAccount} --update-credentials`);
     }
 
-    const baseAccount = existingAccount ?? DEFAULT_ACCOUNT;
     const savedAccount = buildAccountConfig({
       ...baseAccount,
-      name: account,
-      checkIntervalMs: intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : baseAccount.checkIntervalMs,
-      withdrawCooldownMs: withdrawCooldownMs ? parseIntegerOption('withdraw-cooldown-ms', withdrawCooldownMs) : baseAccount.withdrawCooldownMs,
-      mode: mode ?? baseAccount.mode,
+      name: resolvedAccount,
+      checkIntervalMs: resolvedIntervalMs,
+      withdrawCooldownMs: resolvedWithdrawCooldownMs,
+      mode: resolvedMode,
     });
 
     context.configService.saveAccount(savedAccount, sealed);
     printSection(isNewAccount ? 'Account added' : 'Account updated', [
-      `${account} is set to ${savedAccount.mode} mode on MEXC.`,
+      `${resolvedAccount} is set to ${savedAccount.mode} mode on MEXC.`,
       `Check interval: ${savedAccount.checkIntervalMs} ms. Withdraw cooldown: ${savedAccount.withdrawCooldownMs} ms.`,
       wantsCredentialUpdate ? 'Stored API credentials were updated through the interactive prompt.' : 'Stored API credentials were left unchanged.',
-      `Next step: mexc-monitor account test -a ${account}`,
+      `Next step: mexc-monitor account test -a ${resolvedAccount}`,
     ]);
   }
 
@@ -914,34 +963,13 @@ async function main(): Promise<void> {
     });
   addMasterPasswordOption(accountCommand
     .command('add')
-    .description('Create or update an account and store encrypted API credentials')
-    .requiredOption('-a, --account <account>')
+    .description('Create or update an account through an interactive setup flow')
+    .option('-a, --account <account>')
     .option('--interval-ms <intervalMs>')
     .option('--withdraw-cooldown-ms <withdrawCooldownMs>')
     .option('--mode <mode>')
     .option('--update-credentials'))
     .action(saveAccountFromPrompt);
-
-  addMasterPasswordOption(accountCommand
-    .command('set')
-    .description('Deprecated alias for account add')
-    .requiredOption('-a, --account <account>')
-    .option('--interval-ms <intervalMs>')
-    .option('--withdraw-cooldown-ms <withdrawCooldownMs>')
-    .option('--mode <mode>')
-    .option('--update-credentials'))
-    .action(async (options: {
-      account: string;
-      masterPassword?: string;
-      password?: string;
-      intervalMs?: string;
-      withdrawCooldownMs?: string;
-      mode?: 'dry_run' | 'live';
-      updateCredentials?: boolean;
-    }) => {
-      process.stdout.write('`account set` is deprecated. Use `account add` instead.\n');
-      await saveAccountFromPrompt(options);
-    });
 
   accountCommand.command('list').description('List configured accounts').action(() => {
     const accounts = context.configService.listAccounts();

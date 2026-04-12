@@ -90,40 +90,47 @@ bun run src/index.ts auth set-master-password \
 ### 1. Create an account
 
 ```bash
-bun run src/index.ts account set \
-  -a main \
-  --api-key 'your-api-key' \
-  --api-secret 'your-api-secret'
+bun run src/index.ts account add
 ```
 
-That command stores the account and will prompt for the global CLI master password if needed.
+By default, `account add` is interactive. It prompts for:
 
-Update non-secret settings later:
+- the account name
+- the account mode
+- the check interval
+- the withdraw cooldown
+- the global CLI master password
+- the MEXC API key
+- the MEXC API secret
+
+It then stores the account and encrypted credentials locally.
+
+You can still prefill any of those values with flags:
 
 ```bash
-bun run src/index.ts account set -a main --mode dry_run
-bun run src/index.ts account set -a main --interval-ms 10000
-bun run src/index.ts account set -a main --withdraw-cooldown-ms 600000
+bun run src/index.ts account add -a main --mode dry_run
+bun run src/index.ts account add -a main --interval-ms 10000
+bun run src/index.ts account add -a main --withdraw-cooldown-ms 600000
 ```
 
-Update API credentials:
+Update API credentials through the interactive prompt:
 
 ```bash
-bun run src/index.ts account set \
-  -a main \
-  --api-key 'new-api-key' \
-  --api-secret 'new-api-secret'
+bun run src/index.ts account add -a main --update-credentials
 ```
 
 If you prefer non-interactive usage:
 
 ```bash
-bun run src/index.ts account set \
+bun run src/index.ts account add \
   -a main \
-  --api-key 'your-api-key' \
-  --api-secret 'your-api-secret' \
+  --mode dry_run \
+  --interval-ms 10000 \
+  --withdraw-cooldown-ms 600000 \
   --master-password 'your-cli-master-password'
 ```
+
+That still prompts for the API key and API secret. The setup only asks for values you did not pass explicitly.
 
 ### 2. Test API access
 
