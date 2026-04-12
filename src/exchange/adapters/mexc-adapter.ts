@@ -2,6 +2,7 @@ import ccxt from 'ccxt';
 import type { Exchange } from 'ccxt';
 
 import type { Credentials } from '../../core/types';
+import { decimal } from '../../utils/decimal';
 import { BaseCcxtAdapter } from '../base-ccxt-adapter';
 import type { WithdrawInput, WithdrawResult } from '../types';
 
@@ -23,7 +24,7 @@ export class MexcAdapter extends BaseCcxtAdapter {
 
     const result = await this.exchange.withdraw(
       input.asset,
-      Number(input.amount),
+      decimal(input.amount).toString() as unknown as number,
       input.address,
       input.tag,
       { network: input.network },

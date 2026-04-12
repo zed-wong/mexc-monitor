@@ -13,7 +13,7 @@ It is built around a single global CLI master password, encrypted credential sto
 - Uses one global CLI master password for all accounts
 - Supports threshold-based withdrawals by asset amount or estimated `USDT` value
 - Tracks runtime state, audit logs, and withdraw history
-- Provides setup and doctor commands for operator guidance
+- Provides a `doctor` command for operator guidance
 - Supports single-account and multi-account workflows
 
 ## Requirements
@@ -176,11 +176,11 @@ bun run src/index.ts asset-rule add \
 
 You can combine amount thresholds and USDT-value thresholds in the same rule.
 
-### 4. Check balances
+### 4. Verify balances and API health
 
 ```bash
-bun run src/index.ts balance -a main
-bun run src/index.ts balance -a main --master-password 'your-cli-master-password'
+bun run src/index.ts account test -a main
+bun run src/index.ts account test -a main --master-password 'your-cli-master-password'
 ```
 
 The output includes:
@@ -207,15 +207,6 @@ bun run src/index.ts withdraw \
 
 ### 6. Start continuous monitoring
 
-Balance-only watch:
-
-```bash
-bun run src/index.ts watch -a main
-bun run src/index.ts watch -a main --master-password 'your-cli-master-password'
-```
-
-Monitor and evaluate withdrawals continuously:
-
 ```bash
 bun run src/index.ts watch-withdraw -a main
 bun run src/index.ts watch-withdraw -a main --master-password 'your-cli-master-password'
@@ -232,52 +223,39 @@ bun run src/index.ts watch-withdraw \
 
 ## Command reference
 
-### Readiness and diagnostics
+### 1. Start here
 
 ```bash
-bun run src/index.ts setup
+bun run src/index.ts account add
+bun run src/index.ts account test -a main
+bun run src/index.ts asset-rule add -a main --asset BTC --network BTC --withdraw-address bc1qxxxx --max-balance-usdt 1500 --target-balance-usdt 300
+bun run src/index.ts withdraw -a main
+bun run src/index.ts watch-withdraw -a main --interval-ms 30000
+```
+
+### 2. Scale to all accounts
+
+```bash
+bun run src/index.ts account test-all
+bun run src/index.ts withdraw-all
+bun run src/index.ts watch-withdraw-all
+```
+
+Non-interactive multi-account examples:
+
+```bash
+bun run src/index.ts withdraw-all --master-password 'your-cli-master-password'
+bun run src/index.ts watch-withdraw-all --master-password 'your-cli-master-password'
+```
+
+For `live` accounts, add `--confirm-live` to `withdraw`, `withdraw-all`, `watch-withdraw`, and `watch-withdraw-all`.
+
+### 3. Check what is going on
+
+```bash
 bun run src/index.ts doctor
 bun run src/index.ts doctor -a main
-```
 
-### Auth
-
-```bash
-bun run src/index.ts auth status
-bun run src/index.ts auth set-master-password
-```
-
-### Account management
-
-```bash
-bun run src/index.ts account list
-bun run src/index.ts account show -a main
-bun run src/index.ts account rename -a main --to prod
-bun run src/index.ts account remove -a main
-```
-
-### Account health checks
-
-```bash
-bun run src/index.ts account test -a main
-bun run src/index.ts account test-all
-```
-
-### Asset rule management
-
-```bash
-bun run src/index.ts asset-rule list -a main
-bun run src/index.ts asset-rule show -a main --asset BTC
-bun run src/index.ts asset-rule add -a main --asset BTC --network BTC --withdraw-address bc1qxxxx --max-balance-usdt 1500 --target-balance-usdt 300
-bun run src/index.ts asset-rule update -a main --asset BTC --max-balance-usdt 2000
-bun run src/index.ts asset-rule enable -a main --asset BTC
-bun run src/index.ts asset-rule disable -a main --asset BTC
-bun run src/index.ts asset-rule remove -a main --asset BTC
-```
-
-### Runtime state, logs, and history
-
-```bash
 bun run src/index.ts status
 bun run src/index.ts status -a main
 bun run src/index.ts status -a main --asset BTC
@@ -291,31 +269,35 @@ bun run src/index.ts history -a main
 bun run src/index.ts history --status failed
 ```
 
-### Balance and watch commands
+### 4. Manage accounts
 
 ```bash
-bun run src/index.ts balance -a main
-bun run src/index.ts watch -a main --interval-ms 30000
-bun run src/index.ts watch-withdraw -a main --interval-ms 30000
+bun run src/index.ts account add
+bun run src/index.ts account add -a main --update-credentials
+bun run src/index.ts account list
+bun run src/index.ts account show -a main
+bun run src/index.ts account rename -a main --to prod
+bun run src/index.ts account remove -a main
 ```
 
-### Multi-account commands
+### 5. Manage asset rules
 
 ```bash
-bun run src/index.ts watch-all
-bun run src/index.ts withdraw-all
-bun run src/index.ts watch-withdraw-all
+bun run src/index.ts asset-rule list -a main
+bun run src/index.ts asset-rule show -a main --asset BTC
+bun run src/index.ts asset-rule add -a main --asset BTC --network BTC --withdraw-address bc1qxxxx --max-balance-usdt 1500 --target-balance-usdt 300
+bun run src/index.ts asset-rule update -a main --asset BTC --max-balance-usdt 2000
+bun run src/index.ts asset-rule enable -a main --asset BTC
+bun run src/index.ts asset-rule disable -a main --asset BTC
+bun run src/index.ts asset-rule remove -a main --asset BTC
 ```
 
-Non-interactive multi-account examples:
+### 6. Auth and maintenance
 
 ```bash
-bun run src/index.ts watch-all --master-password 'your-cli-master-password'
-bun run src/index.ts withdraw-all --master-password 'your-cli-master-password'
-bun run src/index.ts watch-withdraw-all --master-password 'your-cli-master-password'
+bun run src/index.ts auth status
+bun run src/index.ts auth set-master-password
 ```
-
-For `live` accounts, add `--confirm-live` to `withdraw`, `withdraw-all`, `watch-withdraw`, and `watch-withdraw-all`.
 
 ## Rule model
 
@@ -347,8 +329,8 @@ Additional controls:
 1. Create an account and keep it in `dry_run`
 2. Verify API access with `account test`
 3. Add one or more asset rules
-4. Check balances with `balance`
-5. Run `withdraw` to inspect the plan
+4. Inspect the first withdraw decision with `withdraw`
+5. Review runtime, logs, and history with `doctor`, `status`, `logs`, and `history`
 6. Use `watch-withdraw` in `dry_run`
 7. Switch to `live` only after the results look correct
 

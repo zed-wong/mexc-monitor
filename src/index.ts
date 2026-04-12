@@ -18,7 +18,6 @@ Examples:
   mexc-monitor auth set-master-password
   mexc-monitor account test -a main --master-password '***'
   mexc-monitor account test-all --master-password '***'
-  mexc-monitor balance -a main --master-password '***'
   mexc-monitor withdraw -a main --master-password '***'
   mexc-monitor watch-withdraw -a main --interval-ms 30000 --master-password '***'
 `;
@@ -231,7 +230,7 @@ function getRecommendedNextSteps(
     }
 
     if (runtimeRows.length === 0) {
-      steps.push(`Check live balances for ${account.name}: mexc-monitor balance -a ${account.name}`);
+      steps.push(`Verify exchange access and inspect balances for ${account.name}: mexc-monitor account test -a ${account.name}`);
       steps.push(`Run one withdraw simulation for ${account.name}: mexc-monitor withdraw -a ${account.name}`);
       continue;
     }
@@ -675,7 +674,6 @@ async function runWatchLoop(
   credentials: Credentials,
   account: AccountConfig,
   assetRules: AssetRule[],
-  autoWithdraw: boolean,
 ): Promise<void> {
   const exchange = await initExchange(credentials);
   let cycle = 0;
@@ -689,20 +687,17 @@ async function runWatchLoop(
       `assets=${balances.length}`,
       `enabledRules=${enabledRuleCount}`,
       `mode=${account.mode}`,
-      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
     ]);
     await printBalancesWithUsdtValue(exchange, balances, '  ');
 
-    if (autoWithdraw) {
-      if (enabledRuleCount === 0) {
-        process.stdout.write('  No enabled asset rules. Skipping withdraw checks.\n');
-      }
-      for (const rule of assetRules.filter((item) => item.enabled)) {
-        const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-        const riskControl = new RiskControl();
-        const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-        await monitor.tick(account, rule, credentials);
-      }
+    if (enabledRuleCount === 0) {
+      process.stdout.write('  No enabled asset rules. Skipping withdraw checks.\n');
+    }
+    for (const rule of assetRules.filter((item) => item.enabled)) {
+      const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+      const riskControl = new RiskControl();
+      const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+      await monitor.tick(account, rule, credentials);
     }
 
     process.stdout.write(`  Sleeping ${account.checkIntervalMs} ms before next cycle.\n`);
@@ -714,7 +709,6 @@ async function runWatchAll(
   context: ReturnType<typeof createAppContext>,
   password?: string,
   intervalMs?: number,
-  autoWithdraw?: boolean,
 ): Promise<void> {
   const resolvedPassword = await resolveMasterPassword(password, 'CLI master password for all accounts: ');
   let cycle = 0;
@@ -723,7 +717,6 @@ async function runWatchAll(
     printWatchCycleHeader('watch-all cycle', [
       `cycle=${cycle}`,
       `accounts=${context.configService.listAccounts().length}`,
-      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
       `intervalMs=${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs}`,
     ]);
     for (const account of context.configService.listAccounts()) {
@@ -734,17 +727,15 @@ async function runWatchAll(
       process.stdout.write(`  account=${account.name} mode=${account.mode} assets=${balances.length}\n`);
       await printBalancesWithUsdtValue(exchange, balances, '    ');
 
-      if (autoWithdraw) {
-        const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-        if (rules.length === 0) {
-          process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
-        }
-        for (const rule of rules) {
-          const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-          const riskControl = new RiskControl();
-          const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-          await monitor.tick(selectedAccount, rule, credentials);
-        }
+      const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+      if (rules.length === 0) {
+        process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
+      }
+      for (const rule of rules) {
+        const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+        const riskControl = new RiskControl();
+        const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+        await monitor.tick(selectedAccount, rule, credentials);
       }
     }
 
@@ -804,49 +795,6 @@ async function main(): Promise<void> {
     outputError: (str, write) => write(`Error: ${str}`),
   });
 
-  program
-    .command('setup')
-    .description('Inspect current readiness and print the recommended next steps')
-    .action(() => {
-      printDoctorSummary(context);
-    });
-
-  program
-    .command('doctor')
-    .description('Check current configuration state and tell the operator what to do next')
-    .option('-a, --account <account>')
-    .action(({ account }: { account?: string }) => {
-      printDoctorSummary(context, account);
-    });
-
-  program
-    .command('status')
-    .description('Show the latest runtime state')
-    .option('-a, --account <account>')
-    .option('--asset <asset>')
-    .action(({ account, asset }: { account?: string; asset?: string }) => {
-      const rows = context.runtimeService.listRuntime({
-        accountName: account,
-        asset,
-      });
-
-      if (rows.length === 0) {
-        printEmptyState('No runtime state found for the current filter.');
-        return;
-      }
-
-      printSection('Runtime status', [
-        `Showing ${pluralize(rows.length, 'runtime entry')}.`,
-        `Account filter: ${formatFilterValue(account)}.`,
-        `Asset filter: ${formatFilterValue(asset)}.`,
-      ]);
-      for (const row of rows) {
-        printRuntimeCard(row.accountName, row.asset, row);
-      }
-      printDivider();
-    });
-
-  const authCommand = program.command('auth').description('Manage global CLI master password');
   const accountCommand = program.command('account').description('Manage exchange account');
   const assetRule = program.command('asset-rule').description('Manage asset withdrawal rules');
 
@@ -925,42 +873,6 @@ async function main(): Promise<void> {
     ]);
   }
 
-  authCommand.command('status')
-    .description('Show global CLI master password status')
-    .action(() => {
-      printSection('CLI master password', [
-        context.cliAuthService.isConfigured()
-          ? 'A CLI master password is configured.'
-          : 'No CLI master password is configured yet.',
-        `Stored accounts: ${pluralize(context.configService.listAccounts().length, 'account')}.`,
-      ]);
-    });
-
-  authCommand.command('set-master-password')
-    .description('Initialize or rotate the global CLI master password and re-encrypt stored accounts')
-    .option('--current-master-password <currentMasterPassword>')
-    .addOption(new Option('--current-password <currentPassword>', 'Deprecated alias for --current-master-password').hideHelp())
-    .option('--new-master-password <newMasterPassword>')
-    .addOption(new Option('--new-password <newPassword>', 'Deprecated alias for --new-master-password').hideHelp())
-    .action(async (options: RotateMasterPasswordOptionValues) => {
-      const { currentMasterPassword, newMasterPassword } = resolveRotateMasterPasswordOptions(options);
-      const accountCount = context.configService.listAccounts().length;
-      const requiresCurrentMasterPassword = context.cliAuthService.isConfigured() || accountCount > 0;
-      const resolvedCurrentMasterPassword = requiresCurrentMasterPassword
-        ? await resolveMasterPassword(currentMasterPassword, accountCount > 0 ? 'Current CLI master password: ' : 'Existing CLI master password: ')
-        : undefined;
-      const resolvedNewMasterPassword = await resolveNewMasterPassword(newMasterPassword);
-      const rotatedAccounts = context.credentialService.rotateMasterPassword(
-        resolvedCurrentMasterPassword,
-        resolvedNewMasterPassword,
-      );
-
-      printSection('CLI master password updated', [
-        requiresCurrentMasterPassword
-          ? `Re-encrypted ${pluralize(rotatedAccounts, 'account')} with the new CLI master password.`
-          : 'CLI master password initialized.',
-      ]);
-    });
   addMasterPasswordOption(accountCommand
     .command('add')
     .description('Create or update an account through an interactive setup flow')
@@ -970,45 +882,6 @@ async function main(): Promise<void> {
     .option('--mode <mode>')
     .option('--update-credentials'))
     .action(saveAccountFromPrompt);
-
-  accountCommand.command('list').description('List configured accounts').action(() => {
-    const accounts = context.configService.listAccounts();
-    if (accounts.length === 0) {
-      printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
-      return;
-    }
-
-    printSection('Accounts', [
-      `Configured ${pluralize(accounts.length, 'account')} on MEXC.`,
-    ]);
-    for (const account of accounts) {
-      process.stdout.write(`  ${account.name}: ${account.mode} mode, check every ${account.checkIntervalMs} ms, cooldown ${account.withdrawCooldownMs} ms.\n`);
-    }
-  });
-
-  accountCommand.command('show')
-    .description('Show one account configuration')
-    .requiredOption('-a, --account <account>')
-    .action(({ account }: { account: string }) => {
-      printKeyValue('Account', resolveAccount(context, account) as unknown as Record<string, unknown>);
-    });
-
-  accountCommand.command('remove')
-    .description('Remove an account and its encrypted credentials')
-    .requiredOption('-a, --account <account>')
-    .action(({ account }: { account: string }) => {
-      context.configService.removeAccount(account);
-      process.stdout.write(`Removed account ${account}.\n`);
-    });
-
-  accountCommand.command('rename')
-    .description('Rename an account and move its asset rules with it')
-    .requiredOption('-a, --account <account>')
-    .requiredOption('--to <to>')
-    .action(({ account, to }: { account: string; to: string }) => {
-      context.configService.renameAccount(account, to);
-      process.stdout.write(`Renamed account ${account} to ${to}.\n`);
-    });
 
   addMasterPasswordOption(accountCommand.command('test')
     .description('Unlock credentials and perform an exchange API health check')
@@ -1078,30 +951,43 @@ async function main(): Promise<void> {
       }
     });
 
-  assetRule.command('list')
-    .description('List asset withdrawal rules for an account')
+  accountCommand.command('list').description('List configured accounts').action(() => {
+    const accounts = context.configService.listAccounts();
+    if (accounts.length === 0) {
+      printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
+      return;
+    }
+
+    printSection('Accounts', [
+      `Configured ${pluralize(accounts.length, 'account')} on MEXC.`,
+    ]);
+    for (const account of accounts) {
+      process.stdout.write(`  ${account.name}: ${account.mode} mode, check every ${account.checkIntervalMs} ms, cooldown ${account.withdrawCooldownMs} ms.\n`);
+    }
+  });
+
+  accountCommand.command('show')
+    .description('Show one account configuration')
     .requiredOption('-a, --account <account>')
     .action(({ account }: { account: string }) => {
-      const rules = context.configService.listAssetRules(account);
-      if (rules.length === 0) {
-        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`);
-        return;
-      }
-
-      printSection('Asset rules', [
-        `${account} has ${pluralize(rules.length, 'withdrawal rule')}.`,
-      ]);
-      for (const rule of rules) {
-        process.stdout.write(`  ${rule.asset} on ${rule.network}: target ${rule.targetBalance}, max ${rule.maxBalance}, enabled ${rule.enabled ? 'yes' : 'no'}.\n`);
-      }
+      printKeyValue('Account', resolveAccount(context, account) as unknown as Record<string, unknown>);
     });
 
-  assetRule.command('show')
-    .description('Show one asset withdrawal rule')
+  accountCommand.command('rename')
+    .description('Rename an account and move its asset rules with it')
     .requiredOption('-a, --account <account>')
-    .option('--asset <asset>')
-    .action(({ account, asset }: { account: string; asset?: string }) => {
-      printKeyValue('Asset Rule', resolveAssetRule(context, account, asset) as unknown as Record<string, unknown>);
+    .requiredOption('--to <to>')
+    .action(({ account, to }: { account: string; to: string }) => {
+      context.configService.renameAccount(account, to);
+      process.stdout.write(`Renamed account ${account} to ${to}.\n`);
+    });
+
+  accountCommand.command('remove')
+    .description('Remove an account and its encrypted credentials')
+    .requiredOption('-a, --account <account>')
+    .action(({ account }: { account: string }) => {
+      context.configService.removeAccount(account);
+      process.stdout.write(`Removed account ${account}.\n`);
     });
 
   assetRule
@@ -1147,16 +1033,6 @@ async function main(): Promise<void> {
           `Next step: mexc-monitor withdraw -a ${rule.accountName}`,
         ]);
       });
-    });
-
-  assetRule
-    .command('remove')
-    .description('Remove an asset withdrawal rule')
-    .requiredOption('-a, --account <account>')
-    .requiredOption('--asset <asset>')
-    .action(({ account, asset }: { account: string; asset: string }) => {
-      context.configService.removeAssetRule(account, asset);
-      process.stdout.write(`Removed withdrawal rule ${account}/${asset}.\n`);
     });
 
   assetRule
@@ -1227,6 +1103,191 @@ async function main(): Promise<void> {
       process.stdout.write(`Disabled withdrawal rule ${account}/${asset}.\n`);
     });
 
+  assetRule.command('list')
+    .description('List asset withdrawal rules for an account')
+    .requiredOption('-a, --account <account>')
+    .action(({ account }: { account: string }) => {
+      const rules = context.configService.listAssetRules(account);
+      if (rules.length === 0) {
+        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`);
+        return;
+      }
+
+      printSection('Asset rules', [
+        `${account} has ${pluralize(rules.length, 'withdrawal rule')}.`,
+      ]);
+      for (const rule of rules) {
+        process.stdout.write(`  ${rule.asset} on ${rule.network}: target ${rule.targetBalance}, max ${rule.maxBalance}, enabled ${rule.enabled ? 'yes' : 'no'}.\n`);
+      }
+    });
+
+  assetRule.command('show')
+    .description('Show one asset withdrawal rule')
+    .requiredOption('-a, --account <account>')
+    .option('--asset <asset>')
+    .action(({ account, asset }: { account: string; asset?: string }) => {
+      printKeyValue('Asset Rule', resolveAssetRule(context, account, asset) as unknown as Record<string, unknown>);
+    });
+
+  assetRule
+    .command('remove')
+    .description('Remove an asset withdrawal rule')
+    .requiredOption('-a, --account <account>')
+    .requiredOption('--asset <asset>')
+    .action(({ account, asset }: { account: string; asset: string }) => {
+      context.configService.removeAssetRule(account, asset);
+      process.stdout.write(`Removed withdrawal rule ${account}/${asset}.\n`);
+    });
+
+  addMasterPasswordOption(program
+    .command('withdraw')
+    .description('Run one withdraw check for all enabled rules on an account')
+    .requiredOption('-a, --account <account>')
+    .option('--confirm-live'))
+    .action(async ({ account, masterPassword, password, confirmLive }: {
+      account: string; masterPassword?: string; password?: string; confirmLive?: boolean;
+    }) => {
+      const selectedAccount = resolveAccount(context, account);
+      assertLiveConfirmation(selectedAccount, confirmLive);
+      const resolvedPassword = await resolveMasterPassword(
+        resolveMasterPasswordOption({ masterPassword, password }),
+        'CLI master password for ' + account + ': ',
+      );
+      const credentials = context.credentialService.unlock(account, resolvedPassword);
+      const rules = context.configService.listAssetRules(account).filter((item) => item.enabled);
+      if (rules.length === 0) {
+        printSection('Withdraw check skipped', [
+          `${account} has no enabled withdrawal rules to evaluate.`,
+          `Next step: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`,
+        ]);
+        return;
+      }
+      for (const rule of rules) {
+        await runSingleWithdrawCheck(context, credentials, selectedAccount, rule);
+      }
+      printSection('Withdraw check complete', [
+        `Finished evaluating ${pluralize(rules.length, 'enabled rule')} for ${account}.`,
+      ]);
+    });
+
+  addMasterPasswordOption(program
+    .command('watch-withdraw')
+    .description('Continuously monitor and withdraw for one account')
+    .requiredOption('-a, --account <account>')
+    .option('--interval-ms <intervalMs>', '', '30000')
+    .option('--confirm-live'))
+    .action(async ({ account, masterPassword, password, intervalMs, confirmLive }: {
+      account: string; masterPassword?: string; password?: string; intervalMs: string; confirmLive?: boolean;
+    }) => {
+      const selectedAccount = buildAccountConfig({
+        ...resolveAccount(context, account),
+        checkIntervalMs: parsePositiveIntegerOption('interval-ms', intervalMs),
+      });
+      assertLiveConfirmation(selectedAccount, confirmLive);
+      const resolvedPassword = await resolveMasterPassword(
+        resolveMasterPasswordOption({ masterPassword, password }),
+        'CLI master password for ' + account + ': ',
+      );
+      const credentials = context.credentialService.unlock(account, resolvedPassword);
+      const rules = context.configService.listAssetRules(account).filter((item) => item.enabled);
+      await runWatchLoop(context, credentials, selectedAccount, rules);
+    });
+
+  addMasterPasswordOption(program
+    .command('withdraw-all')
+    .description('Run one withdraw check for every configured account')
+    .option('--confirm-live'))
+    .action(async ({ masterPassword, password, confirmLive }: {
+      masterPassword?: string; password?: string; confirmLive?: boolean;
+    }) => {
+      const accounts = context.configService.listAccounts();
+      if (accounts.length === 0) {
+        throw new Error('No accounts configured.');
+      }
+      assertLiveConfirmationForAccounts(accounts, confirmLive);
+      const resolvedPassword = await resolveMasterPassword(
+        resolveMasterPasswordOption({ masterPassword, password }),
+        'CLI master password for all accounts: ',
+      );
+
+      let enabledRuleCount = 0;
+      for (const account of accounts) {
+        const selectedAccount = resolveAccount(context, account.name);
+        const credentials = context.credentialService.unlock(account.name, resolvedPassword);
+        const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+        enabledRuleCount += rules.length;
+        if (rules.length === 0) {
+          printSection('Withdraw check skipped', [
+            `${account.name} has no enabled withdrawal rules to evaluate.`,
+          ]);
+          continue;
+        }
+        for (const rule of rules) {
+          await runSingleWithdrawCheck(context, credentials, selectedAccount, rule);
+        }
+      }
+      printSection('Withdraw-all complete', [
+        enabledRuleCount > 0
+          ? `Finished evaluating ${pluralize(enabledRuleCount, 'enabled rule')} across ${pluralize(accounts.length, 'account')}.`
+          : `No enabled withdrawal rules were found across ${pluralize(accounts.length, 'account')}.`,
+      ]);
+    });
+
+  addMasterPasswordOption(program
+    .command('watch-withdraw-all')
+    .description('Continuously monitor and withdraw for every configured account')
+    .option('--interval-ms <intervalMs>')
+    .option('--confirm-live'))
+    .action(async ({ masterPassword, password, intervalMs, confirmLive }: {
+      masterPassword?: string; password?: string; intervalMs?: string; confirmLive?: boolean;
+    }) => {
+      const accounts = context.configService.listAccounts();
+      if (accounts.length === 0) {
+        throw new Error('No accounts configured.');
+      }
+      assertLiveConfirmationForAccounts(accounts, confirmLive);
+      await runWatchAll(
+        context,
+        resolveMasterPasswordOption({ masterPassword, password }),
+        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
+      );
+    });
+
+  program
+    .command('doctor')
+    .description('Check current configuration state and tell the operator what to do next')
+    .option('-a, --account <account>')
+    .action(({ account }: { account?: string }) => {
+      printDoctorSummary(context, account);
+    });
+
+  program
+    .command('status')
+    .description('Show the latest runtime state')
+    .option('-a, --account <account>')
+    .option('--asset <asset>')
+    .action(({ account, asset }: { account?: string; asset?: string }) => {
+      const rows = context.runtimeService.listRuntime({
+        accountName: account,
+        asset,
+      });
+
+      if (rows.length === 0) {
+        printEmptyState('No runtime state found for the current filter.');
+        return;
+      }
+
+      printSection('Runtime status', [
+        `Showing ${pluralize(rows.length, 'runtime entry')}.`,
+        `Account filter: ${formatFilterValue(account)}.`,
+        `Asset filter: ${formatFilterValue(asset)}.`,
+      ]);
+      for (const row of rows) {
+        printRuntimeCard(row.accountName, row.asset, row);
+      }
+      printDivider();
+    });
+
   program.command('logs')
     .description('Show recent audit logs')
     .option('-a, --account <account>')
@@ -1291,176 +1352,43 @@ async function main(): Promise<void> {
       printDivider();
     });
 
-  addMasterPasswordOption(program
-    .command('balance')
-    .description('Fetch current free balances for one account')
-    .requiredOption('-a, --account <account>'))
-    .action(async ({ account, masterPassword, password }: { account: string; masterPassword?: string; password?: string }) => {
-      const selectedAccount = resolveAccount(context, account);
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password for ' + account + ': ',
-      );
-      const credentials = context.credentialService.unlock(account, resolvedPassword);
-      const exchange = await initExchange(credentials);
-      const balances = await exchange.fetchAllFreeBalances();
-      printSection(`Balances for ${selectedAccount.name}`, [
-        `Exchange: ${selectedAccount.exchangeId}. Mode: ${selectedAccount.mode}.`,
-      ]);
-      await printBalancesWithUsdtValue(exchange, balances);
-    });
+  const authCommand = program.command('auth').description('Manage global CLI master password');
 
-  addMasterPasswordOption(program
-    .command('watch')
-    .description('Continuously print balances for one account')
-    .requiredOption('-a, --account <account>')
-    .option('--interval-ms <intervalMs>', '', '30000'))
-    .action(async ({ account, masterPassword, password, intervalMs }: {
-      account: string; masterPassword?: string; password?: string; intervalMs: string;
-    }) => {
-      const selectedAccount = buildAccountConfig({
-        ...resolveAccount(context, account),
-        checkIntervalMs: parsePositiveIntegerOption('interval-ms', intervalMs),
-      });
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password for ' + account + ': ',
+  authCommand.command('set-master-password')
+    .description('Initialize or rotate the global CLI master password and re-encrypt stored accounts')
+    .option('--current-master-password <currentMasterPassword>')
+    .addOption(new Option('--current-password <currentPassword>', 'Deprecated alias for --current-master-password').hideHelp())
+    .option('--new-master-password <newMasterPassword>')
+    .addOption(new Option('--new-password <newPassword>', 'Deprecated alias for --new-master-password').hideHelp())
+    .action(async (options: RotateMasterPasswordOptionValues) => {
+      const { currentMasterPassword, newMasterPassword } = resolveRotateMasterPasswordOptions(options);
+      const accountCount = context.configService.listAccounts().length;
+      const requiresCurrentMasterPassword = context.cliAuthService.isConfigured() || accountCount > 0;
+      const resolvedCurrentMasterPassword = requiresCurrentMasterPassword
+        ? await resolveMasterPassword(currentMasterPassword, accountCount > 0 ? 'Current CLI master password: ' : 'Existing CLI master password: ')
+        : undefined;
+      const resolvedNewMasterPassword = await resolveNewMasterPassword(newMasterPassword);
+      const rotatedAccounts = context.credentialService.rotateMasterPassword(
+        resolvedCurrentMasterPassword,
+        resolvedNewMasterPassword,
       );
-      const credentials = context.credentialService.unlock(account, resolvedPassword);
-      await runWatchLoop(context, credentials, selectedAccount, context.configService.listAssetRules(account), false);
-    });
 
-  addMasterPasswordOption(program
-    .command('withdraw')
-    .description('Run one withdraw check for all enabled rules on an account')
-    .requiredOption('-a, --account <account>')
-    .option('--confirm-live'))
-    .action(async ({ account, masterPassword, password, confirmLive }: {
-      account: string; masterPassword?: string; password?: string; confirmLive?: boolean;
-    }) => {
-      const selectedAccount = resolveAccount(context, account);
-      assertLiveConfirmation(selectedAccount, confirmLive);
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password for ' + account + ': ',
-      );
-      const credentials = context.credentialService.unlock(account, resolvedPassword);
-      const rules = context.configService.listAssetRules(account).filter((item) => item.enabled);
-      if (rules.length === 0) {
-        printSection('Withdraw check skipped', [
-          `${account} has no enabled withdrawal rules to evaluate.`,
-          `Next step: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`,
-        ]);
-        return;
-      }
-      for (const rule of rules) {
-        await runSingleWithdrawCheck(context, credentials, selectedAccount, rule);
-      }
-      printSection('Withdraw check complete', [
-        `Finished evaluating ${pluralize(rules.length, 'enabled rule')} for ${account}.`,
+      printSection('CLI master password updated', [
+        requiresCurrentMasterPassword
+          ? `Re-encrypted ${pluralize(rotatedAccounts, 'account')} with the new CLI master password.`
+          : 'CLI master password initialized.',
       ]);
     });
 
-  addMasterPasswordOption(program
-    .command('watch-withdraw')
-    .description('Continuously monitor and withdraw for one account')
-    .requiredOption('-a, --account <account>')
-    .option('--interval-ms <intervalMs>', '', '30000')
-    .option('--confirm-live'))
-    .action(async ({ account, masterPassword, password, intervalMs, confirmLive }: {
-      account: string; masterPassword?: string; password?: string; intervalMs: string; confirmLive?: boolean;
-    }) => {
-      const selectedAccount = buildAccountConfig({
-        ...resolveAccount(context, account),
-        checkIntervalMs: parsePositiveIntegerOption('interval-ms', intervalMs),
-      });
-      assertLiveConfirmation(selectedAccount, confirmLive);
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password for ' + account + ': ',
-      );
-      const credentials = context.credentialService.unlock(account, resolvedPassword);
-      const rules = context.configService.listAssetRules(account).filter((item) => item.enabled);
-      await runWatchLoop(context, credentials, selectedAccount, rules, true);
-    });
-
-  addMasterPasswordOption(program
-    .command('watch-all')
-    .description('Continuously print balances for all configured accounts')
-    .option('--interval-ms <intervalMs>'))
-    .action(async ({ masterPassword, password, intervalMs }: {
-      masterPassword?: string; password?: string; intervalMs?: string;
-    }) => {
-      if (context.configService.listAccounts().length === 0) {
-        throw new Error('No accounts configured.');
-      }
-      await runWatchAll(
-        context,
-        resolveMasterPasswordOption({ masterPassword, password }),
-        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
-        false,
-      );
-    });
-
-  addMasterPasswordOption(program
-    .command('withdraw-all')
-    .description('Run one withdraw check for every configured account')
-    .option('--confirm-live'))
-    .action(async ({ masterPassword, password, confirmLive }: {
-      masterPassword?: string; password?: string; confirmLive?: boolean;
-    }) => {
-      const accounts = context.configService.listAccounts();
-      if (accounts.length === 0) {
-        throw new Error('No accounts configured.');
-      }
-      assertLiveConfirmationForAccounts(accounts, confirmLive);
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password for all accounts: ',
-      );
-
-      let enabledRuleCount = 0;
-      for (const account of accounts) {
-        const selectedAccount = resolveAccount(context, account.name);
-        const credentials = context.credentialService.unlock(account.name, resolvedPassword);
-        const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-        enabledRuleCount += rules.length;
-        if (rules.length === 0) {
-          printSection('Withdraw check skipped', [
-            `${account.name} has no enabled withdrawal rules to evaluate.`,
-          ]);
-          continue;
-        }
-        for (const rule of rules) {
-          await runSingleWithdrawCheck(context, credentials, selectedAccount, rule);
-        }
-      }
-      printSection('Withdraw-all complete', [
-        enabledRuleCount > 0
-          ? `Finished evaluating ${pluralize(enabledRuleCount, 'enabled rule')} across ${pluralize(accounts.length, 'account')}.`
-          : `No enabled withdrawal rules were found across ${pluralize(accounts.length, 'account')}.`,
+  authCommand.command('status')
+    .description('Show global CLI master password status')
+    .action(() => {
+      printSection('CLI master password', [
+        context.cliAuthService.isConfigured()
+          ? 'A CLI master password is configured.'
+          : 'No CLI master password is configured yet.',
+        `Stored accounts: ${pluralize(context.configService.listAccounts().length, 'account')}.`,
       ]);
-    });
-
-  addMasterPasswordOption(program
-    .command('watch-withdraw-all')
-    .description('Continuously monitor and withdraw for every configured account')
-    .option('--interval-ms <intervalMs>')
-    .option('--confirm-live'))
-    .action(async ({ masterPassword, password, intervalMs, confirmLive }: {
-      masterPassword?: string; password?: string; intervalMs?: string; confirmLive?: boolean;
-    }) => {
-      const accounts = context.configService.listAccounts();
-      if (accounts.length === 0) {
-        throw new Error('No accounts configured.');
-      }
-      assertLiveConfirmationForAccounts(accounts, confirmLive);
-      await runWatchAll(
-        context,
-        resolveMasterPasswordOption({ masterPassword, password }),
-        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
-        true,
-      );
     });
 
   try {

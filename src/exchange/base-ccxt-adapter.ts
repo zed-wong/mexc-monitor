@@ -1,6 +1,7 @@
 import type { Exchange } from 'ccxt';
 
 import type { Credentials } from '../core/types';
+import { decimal } from '../utils/decimal';
 import type { ExchangeAdapter } from './types';
 
 export abstract class BaseCcxtAdapter implements ExchangeAdapter {
@@ -25,10 +26,10 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
     }
 
     const balance = await this.exchange.fetchBalance();
-    const freeBalances = balance.free as unknown as Record<string, number | undefined> | undefined;
+    const freeBalances = balance.free as unknown as Record<string, string | number | undefined> | undefined;
     return Object.entries(freeBalances ?? {})
-      .filter(([, free]) => free !== undefined && Number(free) > 0)
-      .map(([asset, free]) => ({ asset, free: String(free) }));
+      .filter(([, free]) => free !== undefined && decimal(String(free)).gt(0))
+      .map(([asset, free]) => ({ asset, free: decimal(String(free)).toFixed() }));
   }
 
   async fetchQuotePrice(asset: string, quoteAsset: string): Promise<string | null> {
@@ -46,13 +47,13 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
     }
 
     const ticker = await this.exchange.fetchTicker(symbol);
-    const price = typeof ticker.last === 'number'
+    const price = typeof ticker.last === 'number' || typeof ticker.last === 'string'
       ? ticker.last
-      : typeof ticker.close === 'number'
+      : typeof ticker.close === 'number' || typeof ticker.close === 'string'
         ? ticker.close
         : undefined;
 
-    return price !== undefined ? String(price) : null;
+    return price !== undefined ? decimal(String(price)).toFixed() : null;
   }
 
   abstract withdraw(input: Parameters<ExchangeAdapter['withdraw']>[0]): ReturnType<ExchangeAdapter['withdraw']>;
