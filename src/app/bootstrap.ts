@@ -19,7 +19,7 @@ import { CliAuthService } from '../services/cli-auth-service';
 const DEFAULT_ACCOUNT: AccountConfig = {
   name: 'default',
   exchangeId: 'mexc',
-  checkIntervalMs: 30000,
+  checkIntervalMs: 15000,
   withdrawCooldownMs: 600000,
   mode: 'live',
 };

@@ -227,18 +227,18 @@ async function fetchUsdtQuote(
   }
 }
 
-async function printBalancesWithUsdtValue(
+async function formatBalancesWithUsdtValue(
   exchange: Awaited<ReturnType<typeof initExchange>>,
   balances: Array<{ asset: string; free: string }>,
   indent = '',
-): Promise<void> {
+): Promise<string> {
   if (balances.length === 0) {
-    process.stdout.write(`${indent}No free balance returned by the exchange.\n`);
-    return;
+    return `${indent}No free balance returned by the exchange.\n`;
   }
 
   let totalUsdt = decimal(0);
   let hasEstimate = false;
+  const lines: string[] = [];
 
   for (const item of balances) {
     const quote = await fetchUsdtQuote(exchange, item.asset);
@@ -247,11 +247,21 @@ async function printBalancesWithUsdtValue(
       totalUsdt = totalUsdt.plus(estimatedValue);
       hasEstimate = true;
     }
-    process.stdout.write(`${indent}${item.asset.padEnd(12)} ${item.free}${estimatedValue ? `  (~${estimatedValue} USDT)` : ''}\n`);
+    lines.push(`${indent}${item.asset.padEnd(12)} ${item.free}${estimatedValue ? `  (~${estimatedValue} USDT)` : ''}`);
   }
 
-  process.stdout.write(`${indent}Total estimated value: ${hasEstimate ? `${totalUsdt.toFixed()} USDT` : 'unavailable'}\n`);
+  lines.push(`${indent}Total estimated value: ${hasEstimate ? `${totalUsdt.toFixed()} USDT` : 'unavailable'}`);
+  return `${lines.join('\n')}\n`;
 }
+
+async function printBalancesWithUsdtValue(
+  exchange: Awaited<ReturnType<typeof initExchange>>,
+  balances: Array<{ asset: string; free: string }>,
+  indent = '',
+): Promise<void> {
+  process.stdout.write(await formatBalancesWithUsdtValue(exchange, balances, indent));
+}
+
 
 function getRecommendedNextSteps(
   context: ReturnType<typeof createAppContext>,
@@ -872,31 +882,45 @@ async function runWatchAll(
         `Scan interval     ${formatDurationMs(watchIntervalMs)}`,
         `Auto withdraw     ${autoWithdraw ? 'on' : 'off'}`,
       ]);
-      for (const account of accounts) {
-        try {
-          const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
-          const credentials = context.credentialService.unlock(account.name, resolvedPassword);
-          const exchange = await initExchange(credentials);
-          const balances = await exchange.fetchAllFreeBalances();
-          printBalanceReadHeader(selectedAccount, balances.length);
-          await printBalancesWithUsdtValue(exchange, balances, '    ');
 
-          if (autoWithdraw) {
-            const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-            if (rules.length === 0) {
-              process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
-            }
-            for (const rule of rules) {
-              const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-              const riskControl = new RiskControl();
-              const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-              await monitor.tick(selectedAccount, rule, credentials);
-            }
+      const results = await Promise.allSettled(accounts.map(async (account) => {
+        const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
+        const credentials = context.credentialService.unlock(account.name, resolvedPassword);
+        const exchange = await initExchange(credentials);
+        const balances = await exchange.fetchAllFreeBalances();
+        const balancesText = await formatBalancesWithUsdtValue(exchange, balances, '    ');
+
+        let noEnabledRules = false;
+        if (autoWithdraw) {
+          const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+          noEnabledRules = rules.length === 0;
+          for (const rule of rules) {
+            const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+            const riskControl = new RiskControl();
+            const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+            await monitor.tick(selectedAccount, rule, credentials);
           }
-        } catch (error) {
+        }
+
+        return {
+          selectedAccount,
+          assetCount: balances.length,
+          balancesText,
+          noEnabledRules,
+        };
+      }));
+
+      for (const [index, result] of results.entries()) {
+        if (result.status === 'rejected') {
           process.stderr.write(
-            `Watch warning: account ${account.name} failed during cycle ${cycle}: ${formatErrorMessage(error)}\n`,
+            `Watch warning: account ${accounts[index]?.name ?? '?'} failed during cycle ${cycle}: ${formatErrorMessage(result.reason)}\n`,
           );
+          continue;
+        }
+        printBalanceReadHeader(result.value.selectedAccount, result.value.assetCount);
+        process.stdout.write(result.value.balancesText);
+        if (result.value.noEnabledRules) {
+          process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
         }
       }
     } catch (error) {
@@ -905,9 +929,7 @@ async function runWatchAll(
       );
     }
 
-    process.stdout.write(`
-Next full scan in ${formatDurationMs(watchIntervalMs)}.
-`);
+    process.stdout.write(`\nNext full scan in ${formatDurationMs(watchIntervalMs)}.\n`);
     await sleep(watchIntervalMs);
   }
 }
@@ -1063,7 +1085,12 @@ async function main(): Promise<void> {
 
     const pending = new Map(accounts.map((account) => {
       const promise = fetchAccountHealthCheck(context, account.name, resolvedPassword)
-        .then((result) => ({ ok: true as const, account, result }))
+        .then(async (result) => ({
+          ok: true as const,
+          account,
+          result,
+          balancesText: await formatBalancesWithUsdtValue(result.exchange, result.balances, '  '),
+        }))
         .catch((error) => ({
           ok: false as const,
           account,
@@ -1087,11 +1114,7 @@ async function main(): Promise<void> {
         } else {
           process.stdout.write(`  Mode: ${result.account.mode}\n`);
         }
-        if (result.balances.length === 0) {
-          process.stdout.write('  No free balance returned by the exchange.\n');
-        } else {
-          await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
-        }
+        process.stdout.write(settled.value.balancesText);
         continue;
       }
 
@@ -1110,6 +1133,7 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   }
+
 
   addMasterPasswordOption(accountCommand
     .command('add')
