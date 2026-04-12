@@ -32,6 +32,7 @@ export function runSchema(db: Database): void {
       network TEXT NOT NULL,
       withdraw_address TEXT NOT NULL,
       withdraw_tag TEXT,
+      address_book_alias TEXT,
       target_balance TEXT NOT NULL,
       max_balance TEXT NOT NULL,
       target_balance_usdt TEXT,
@@ -96,6 +97,17 @@ export function runSchema(db: Database): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS address_book (
+      account_name TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      asset TEXT NOT NULL,
+      network TEXT NOT NULL,
+      address TEXT NOT NULL,
+      tag TEXT,
+      note TEXT,
+      PRIMARY KEY (account_name, alias)
+    );
   `);
 
   ensureColumn(db, 'withdraw_history', 'quote_asset', 'quote_asset TEXT');
@@ -103,4 +115,5 @@ export function runSchema(db: Database): void {
   ensureColumn(db, 'withdraw_history', 'estimated_value', 'estimated_value TEXT');
   ensureColumn(db, 'asset_rules', 'target_balance_usdt', 'target_balance_usdt TEXT');
   ensureColumn(db, 'asset_rules', 'max_balance_usdt', 'max_balance_usdt TEXT');
+  ensureColumn(db, 'asset_rules', 'address_book_alias', 'address_book_alias TEXT');
 }

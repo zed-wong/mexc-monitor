@@ -18,6 +18,7 @@ export class AssetRuleRepo {
       network: String(row.network),
       withdrawAddress: String(row.withdraw_address),
       withdrawTag: row.withdraw_tag ? String(row.withdraw_tag) : undefined,
+      addressBookAlias: row.address_book_alias ? String(row.address_book_alias) : undefined,
       targetBalance: String(row.target_balance),
       maxBalance: String(row.max_balance),
       targetBalanceUsdt: row.target_balance_usdt ? String(row.target_balance_usdt) : undefined,
@@ -31,10 +32,10 @@ export class AssetRuleRepo {
   save(rule: AssetRule): void {
     this.db.prepare(`
       INSERT INTO asset_rules (
-        account_name, exchange_id, asset, network, withdraw_address, withdraw_tag,
+        account_name, exchange_id, asset, network, withdraw_address, withdraw_tag, address_book_alias,
         target_balance, max_balance, target_balance_usdt, max_balance_usdt, min_withdraw_amount, max_withdraw_amount, enabled
       ) VALUES (
-        @account_name, @exchange_id, @asset, @network, @withdraw_address, @withdraw_tag,
+        @account_name, @exchange_id, @asset, @network, @withdraw_address, @withdraw_tag, @address_book_alias,
         @target_balance, @max_balance, @target_balance_usdt, @max_balance_usdt, @min_withdraw_amount, @max_withdraw_amount, @enabled
       )
       ON CONFLICT(account_name, asset) DO UPDATE SET
@@ -42,6 +43,7 @@ export class AssetRuleRepo {
         network = excluded.network,
         withdraw_address = excluded.withdraw_address,
         withdraw_tag = excluded.withdraw_tag,
+        address_book_alias = excluded.address_book_alias,
         target_balance = excluded.target_balance,
         max_balance = excluded.max_balance,
         target_balance_usdt = excluded.target_balance_usdt,
@@ -56,6 +58,7 @@ export class AssetRuleRepo {
       network: rule.network,
       withdraw_address: rule.withdrawAddress,
       withdraw_tag: rule.withdrawTag ?? null,
+      address_book_alias: rule.addressBookAlias ?? null,
       target_balance: rule.targetBalance,
       max_balance: rule.maxBalance,
       target_balance_usdt: rule.targetBalanceUsdt ?? null,

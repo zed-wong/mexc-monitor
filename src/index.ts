@@ -1,5 +1,5 @@
 import { createAppContext, DEFAULT_ACCOUNT } from './app/bootstrap';
-import type { AccountConfig, AssetRule, Credentials } from './core/types';
+import type { AccountConfig, AddressBookEntry, AssetRule, Credentials } from './core/types';
 import { Command, Option } from 'commander';
 import { createExchangeAdapter } from './exchange/exchange-factory';
 import { WithdrawService } from './core/withdraw-service';
@@ -14,6 +14,8 @@ import * as readline from 'node:readline';
 const EXAMPLES = `
 Examples:
   mexc-monitor account add -a main
+  mexc-monitor address-book add -a main --alias treasury --asset USDT --network ERC20 --address 0xabc...
+  mexc-monitor asset-rule add -a main --address-book treasury --max-balance 1000 --target-balance 200
   mexc-monitor asset-rule add -a main --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200
   mexc-monitor auth set-master-password
   mexc-monitor balance check-one -a main --master-password '***'
@@ -33,6 +35,13 @@ function truncateValue(value: unknown, maxLength = 80): string {
     return text;
   }
   return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 function printDivider(): void {
@@ -59,6 +68,30 @@ function printSection(title: string, lines: string[]): void {
 
 function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) {
+    return `${ms} ms`;
+  }
+
+  const totalSeconds = Math.floor(ms / 1000);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600);
+  const parts: string[] = [];
+
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  if (seconds > 0 || parts.length === 0) {
+    parts.push(`${seconds}s`);
+  }
+
+  return parts.join(' ');
 }
 
 function formatFilterValue(value?: string): string {
@@ -154,8 +187,29 @@ function printWithdrawPlan(
     `Estimated value    ${quote ? `${quote.estimatedValue} ${quote.asset} @ ${quote.price} ${quote.asset}` : 'unavailable'}`,
     `Network            ${rule.network}`,
     `Address            ${rule.withdrawAddress}`,
+    `Address book       ${rule.addressBookAlias ?? '-'}`,
     `Confirm live       ${account.mode === 'live' ? 'required and provided' : 'not required (dry_run)'}`,
   ]);
+}
+
+function buildAddressBookEntry(options: {
+  accountName: string;
+  alias: string;
+  asset: string;
+  network: string;
+  address: string;
+  tag?: string;
+  note?: string;
+}): AddressBookEntry {
+  return {
+    accountName: options.accountName,
+    alias: options.alias,
+    asset: options.asset,
+    network: options.network,
+    address: options.address,
+    tag: options.tag,
+    note: options.note,
+  };
 }
 
 async function fetchUsdtQuote(
@@ -224,9 +278,13 @@ function getRecommendedNextSteps(
     const rules = context.configService.listAssetRules(account.name);
     const enabledRules = rules.filter((item) => item.enabled);
     const runtimeRows = context.runtimeService.listRuntime({ accountName: account.name });
+    const addressBookEntries = context.configService.listAddressBookEntries(account.name);
 
     if (rules.length === 0) {
-      steps.push(`Add a withdrawal rule for ${account.name}: mexc-monitor asset-rule add -a ${account.name} --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200`);
+      if (addressBookEntries.length === 0) {
+        steps.push(`Add an address book entry for ${account.name}: mexc-monitor address-book add -a ${account.name} --alias treasury --asset USDT --network ERC20 --address 0xabc...`);
+      }
+      steps.push(`Add a withdrawal rule for ${account.name}: mexc-monitor asset-rule add -a ${account.name} --address-book treasury --max-balance 1000 --target-balance 200`);
       continue;
     }
 
@@ -241,7 +299,7 @@ function getRecommendedNextSteps(
       continue;
     }
 
-    steps.push(`Inspect current runtime for ${account.name}: mexc-monitor status -a ${account.name}`);
+    steps.push(`Review recent withdraw attempts for ${account.name}: mexc-monitor withdraw attempts -a ${account.name}`);
     steps.push(`Start continuous monitoring for ${account.name}: mexc-monitor withdraw check-one-loop -a ${account.name} --interval-ms ${account.checkIntervalMs}`);
 
     if (account.mode === 'dry_run') {
@@ -367,10 +425,20 @@ function printDoctorSummary(context: ReturnType<typeof createAppContext>, accoun
 }
 
 function printWatchCycleHeader(title: string, details: string[]): void {
-  process.stdout.write(`\n[${new Date().toISOString()}] ${title}\n`);
+  process.stdout.write(`\n${title}\n`);
   for (const detail of details) {
     process.stdout.write(`  ${detail}\n`);
   }
+}
+
+function printBalanceReadHeader(account: AccountConfig, assetCount: number): void {
+  printDivider();
+  printSection(`${account.name}`, [
+    `Read at           ${new Date().toISOString()}`,
+    `Exchange          ${account.exchangeId}`,
+    `Mode              ${account.mode}`,
+    `Assets            ${assetCount}`,
+  ]);
 }
 
 async function promptHiddenSecret(label: string): Promise<string> {
@@ -568,6 +636,7 @@ function buildAssetRule(options: {
   network: string;
   withdrawAddress: string;
   withdrawTag?: string;
+  addressBookAlias?: string;
   targetBalance?: string;
   maxBalance?: string;
   targetBalanceUsdt?: string;
@@ -582,6 +651,7 @@ function buildAssetRule(options: {
     network: options.network,
     withdrawAddress: options.withdrawAddress,
     withdrawTag: options.withdrawTag,
+    addressBookAlias: options.addressBookAlias,
     targetBalance: options.targetBalance ?? '0',
     maxBalance: options.maxBalance ?? '999999999',
     targetBalanceUsdt: options.targetBalanceUsdt,
@@ -605,6 +675,63 @@ async function validateAssetRuleForExchange(rule: AssetRule): Promise<void> {
     network: rule.network,
     address: rule.withdrawAddress,
   });
+}
+
+function resolveAddressBookEntry(
+  context: ReturnType<typeof createAppContext>,
+  accountName: string,
+  alias: string,
+): AddressBookEntry {
+  const entry = context.configService.getAddressBookEntry(accountName, alias);
+  if (!entry) {
+    throw new Error(`Address book entry not found: ${accountName}/${alias}`);
+  }
+  return entry;
+}
+
+function buildRuleDestination(
+  context: ReturnType<typeof createAppContext>,
+  options: {
+    accountName: string;
+    asset?: string;
+    network?: string;
+    withdrawAddress?: string;
+    withdrawTag?: string;
+    addressBook?: string;
+  },
+): Pick<AssetRule, 'asset' | 'network' | 'withdrawAddress' | 'withdrawTag' | 'addressBookAlias'> {
+  if (options.addressBook) {
+    const entry = resolveAddressBookEntry(context, options.accountName, options.addressBook);
+    if (options.asset && options.asset !== entry.asset) {
+      throw new Error(`Address book entry ${options.addressBook} is for ${entry.asset}, not ${options.asset}.`);
+    }
+
+    return {
+      asset: entry.asset,
+      network: options.network ?? entry.network,
+      withdrawAddress: options.withdrawAddress ?? entry.address,
+      withdrawTag: options.withdrawTag ?? entry.tag,
+      addressBookAlias: entry.alias,
+    };
+  }
+
+  if (!options.asset) {
+    throw new Error('Missing required option: --asset <asset>');
+  }
+  if (!options.network) {
+    throw new Error('Missing required option: --network <network>');
+  }
+  if (!options.withdrawAddress) {
+    throw new Error('Missing required option: --withdraw-address <withdrawAddress>');
+  }
+
+  return {
+    asset: options.asset,
+    network: options.network,
+    withdrawAddress: options.withdrawAddress,
+    withdrawTag: options.withdrawTag,
+    addressBookAlias: undefined,
+  };
 }
 
 async function fetchAccountHealthCheck(
@@ -692,17 +819,19 @@ async function runWatchLoop(
 ): Promise<void> {
   const exchange = await initExchange(credentials);
   let cycle = 0;
+  const enabledRuleCount = assetRules.filter((item) => item.enabled).length;
 
   for (;;) {
     cycle += 1;
     const balances = await exchange.fetchAllFreeBalances();
-    const enabledRuleCount = assetRules.filter((item) => item.enabled).length;
-    printWatchCycleHeader(`watch cycle account=${account.name}`, [
-      `cycle=${cycle}`,
-      `assets=${balances.length}`,
-      `enabledRules=${enabledRuleCount}`,
-      `mode=${account.mode}`,
-      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
+    printWatchCycleHeader(`Balance watch: ${account.name}`, [
+      `Cycle             ${cycle}`,
+      `Started at        ${new Date().toISOString()}`,
+      `Mode              ${account.mode}`,
+      `Assets found      ${balances.length}`,
+      `Withdraw rules    ${enabledRuleCount} enabled`,
+      `Auto withdraw     ${autoWithdraw ? 'on' : 'off'}`,
+      `Next scan         ${formatDurationMs(account.checkIntervalMs)}`,
     ]);
     await printBalancesWithUsdtValue(exchange, balances, '  ');
 
@@ -718,7 +847,7 @@ async function runWatchLoop(
       }
     }
 
-    process.stdout.write(`  Sleeping ${account.checkIntervalMs} ms before next cycle.\n`);
+    process.stdout.write(`  Next scan in ${formatDurationMs(account.checkIntervalMs)}.\n`);
     await sleep(account.checkIntervalMs);
   }
 }
@@ -731,40 +860,58 @@ async function runWatchAll(
 ): Promise<void> {
   const resolvedPassword = await resolveMasterPassword(password, 'CLI master password for all accounts: ');
   let cycle = 0;
+  const watchIntervalMs = intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs;
   for (;;) {
     cycle += 1;
-    printWatchCycleHeader('watch-all cycle', [
-      `cycle=${cycle}`,
-      `accounts=${context.configService.listAccounts().length}`,
-      `intervalMs=${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs}`,
-      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
-    ]);
-    for (const account of context.configService.listAccounts()) {
-      const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
-      const credentials = context.credentialService.unlock(account.name, resolvedPassword);
-      const exchange = await initExchange(credentials);
-      const balances = await exchange.fetchAllFreeBalances();
-      process.stdout.write(`  account=${account.name} mode=${account.mode} assets=${balances.length}\n`);
-      await printBalancesWithUsdtValue(exchange, balances, '    ');
+    try {
+      const accounts = context.configService.listAccounts();
+      printWatchCycleHeader('Balance watch: all accounts', [
+        `Cycle             ${cycle}`,
+        `Started at        ${new Date().toISOString()}`,
+        `Accounts          ${accounts.length}`,
+        `Scan interval     ${formatDurationMs(watchIntervalMs)}`,
+        `Auto withdraw     ${autoWithdraw ? 'on' : 'off'}`,
+      ]);
+      for (const account of accounts) {
+        try {
+          const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
+          const credentials = context.credentialService.unlock(account.name, resolvedPassword);
+          const exchange = await initExchange(credentials);
+          const balances = await exchange.fetchAllFreeBalances();
+          printBalanceReadHeader(selectedAccount, balances.length);
+          await printBalancesWithUsdtValue(exchange, balances, '    ');
 
-      if (autoWithdraw) {
-        const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-        if (rules.length === 0) {
-          process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
-        }
-        for (const rule of rules) {
-          const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-          const riskControl = new RiskControl();
-          const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-          await monitor.tick(selectedAccount, rule, credentials);
+          if (autoWithdraw) {
+            const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+            if (rules.length === 0) {
+              process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
+            }
+            for (const rule of rules) {
+              const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+              const riskControl = new RiskControl();
+              const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+              await monitor.tick(selectedAccount, rule, credentials);
+            }
+          }
+        } catch (error) {
+          process.stderr.write(
+            `Watch warning: account ${account.name} failed during cycle ${cycle}: ${formatErrorMessage(error)}\n`,
+          );
         }
       }
+    } catch (error) {
+      process.stderr.write(
+        `Watch warning: full scan failed during cycle ${cycle}: ${formatErrorMessage(error)}\n`,
+      );
     }
 
-    process.stdout.write(`  Sleeping ${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs} ms before next cycle.\n`);
-    await sleep(intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs);
+    process.stdout.write(`
+Next full scan in ${formatDurationMs(watchIntervalMs)}.
+`);
+    await sleep(watchIntervalMs);
   }
 }
+
 
 async function runSingleWithdrawCheck(
   context: ReturnType<typeof createAppContext>,
@@ -818,6 +965,7 @@ async function main(): Promise<void> {
   });
 
   const accountCommand = program.command('account').description('Manage exchange account');
+  const addressBookCommand = program.command('address-book').description('Manage saved withdrawal destinations');
   const assetRule = program.command('asset-rule').description('Manage asset withdrawal rules');
   const balanceCommand = program.command('balance').description('Balance operations');
   const withdrawCommand = program.command('withdraw').description('Withdraw operations');
@@ -1025,13 +1173,125 @@ async function main(): Promise<void> {
       process.stdout.write(`Removed account ${account}.\n`);
     });
 
+  addressBookCommand
+    .command('add')
+    .description('Save a withdrawal destination under a reusable alias')
+    .requiredOption('-a, --account <account>', 'Account name this address book entry belongs to')
+    .requiredOption('--alias <alias>', 'Short alias used when creating withdrawal rules')
+    .requiredOption('--asset <asset>', 'Asset symbol this destination is intended for')
+    .requiredOption('--network <network>', 'Withdrawal network to use on the exchange')
+    .requiredOption('--address <address>', 'Destination address')
+    .option('--tag <tag>', 'Optional memo, tag, or payment ID')
+    .option('--note <note>', 'Free-form note to describe this destination')
+    .action((options: {
+      account: string; alias: string; asset: string; network: string; address: string; tag?: string; note?: string;
+    }) => {
+      const account = resolveAccount(context, options.account);
+      const entry = buildAddressBookEntry({
+        accountName: account.name,
+        alias: options.alias,
+        asset: options.asset,
+        network: options.network,
+        address: options.address,
+        tag: options.tag,
+        note: options.note,
+      });
+
+      return createExchangeAdapter(account.exchangeId).validateConfig({
+        asset: entry.asset,
+        network: entry.network,
+        address: entry.address,
+      }).then(() => {
+        context.configService.saveAddressBookEntry(entry);
+        printSection('Address book entry saved', [
+          `${entry.alias} is ready for ${entry.accountName}.`,
+          `Destination: ${entry.asset} on ${entry.network}.`,
+          `Next step: mexc-monitor asset-rule add -a ${entry.accountName} --address-book ${entry.alias} --max-balance 1000 --target-balance 200`,
+        ]);
+      });
+    });
+
+  addressBookCommand
+    .command('update')
+    .description('Update a saved withdrawal destination')
+    .requiredOption('-a, --account <account>')
+    .requiredOption('--alias <alias>')
+    .option('--asset <asset>')
+    .option('--network <network>')
+    .option('--address <address>')
+    .option('--tag <tag>')
+    .option('--note <note>')
+    .action((options: {
+      account: string; alias: string; asset?: string; network?: string; address?: string; tag?: string; note?: string;
+    }) => {
+      const existing = resolveAddressBookEntry(context, options.account, options.alias);
+      const entry = buildAddressBookEntry({
+        accountName: existing.accountName,
+        alias: existing.alias,
+        asset: options.asset ?? existing.asset,
+        network: options.network ?? existing.network,
+        address: options.address ?? existing.address,
+        tag: options.tag ?? existing.tag,
+        note: options.note ?? existing.note,
+      });
+
+      return createExchangeAdapter(resolveAccount(context, existing.accountName).exchangeId).validateConfig({
+        asset: entry.asset,
+        network: entry.network,
+        address: entry.address,
+      }).then(() => {
+        context.configService.saveAddressBookEntry(entry);
+        process.stdout.write(`Updated address book entry ${entry.accountName}/${entry.alias}.\n`);
+      });
+    });
+
+  addressBookCommand
+    .command('list')
+    .description('List saved withdrawal destinations')
+    .requiredOption('-a, --account <account>')
+    .action(({ account }: { account: string }) => {
+      const entries = context.configService.listAddressBookEntries(account);
+      if (entries.length === 0) {
+        printEmptyState(`No address book entries configured for ${account}. Add one with: mexc-monitor address-book add -a ${account} --alias treasury --asset USDT --network ERC20 --address 0xabc...`);
+        return;
+      }
+
+      printSection('Address book', [
+        `${account} has ${pluralize(entries.length, 'saved destination')}.`,
+      ]);
+      for (const entry of entries) {
+        process.stdout.write(`  ${entry.alias}: ${entry.asset} on ${entry.network} -> ${entry.address}${entry.note ? ` (${entry.note})` : ''}\n`);
+      }
+    });
+
+  addressBookCommand
+    .command('show')
+    .description('Show one saved withdrawal destination')
+    .requiredOption('-a, --account <account>')
+    .requiredOption('--alias <alias>')
+    .action(({ account, alias }: { account: string; alias: string }) => {
+      printKeyValue('Address Book Entry', resolveAddressBookEntry(context, account, alias) as unknown as Record<string, unknown>);
+    });
+
+  addressBookCommand
+    .command('remove')
+    .description('Delete a saved withdrawal destination')
+    .requiredOption('-a, --account <account>')
+    .requiredOption('--alias <alias>')
+    .action(({ account, alias }: { account: string; alias: string }) => {
+      resolveAddressBookEntry(context, account, alias);
+      context.configService.removeAddressBookEntry(account, alias);
+      process.stdout.write(`Removed address book entry ${account}/${alias}.\n`);
+    });
+
   assetRule
     .command('add')
     .description('Create a new rule for when and where an asset should be withdrawn')
     .requiredOption('-a, --account <account>', 'Account name this rule belongs to')
-    .requiredOption('--asset <asset>', 'Asset symbol to monitor and withdraw, for example BTC or USDT')
-    .requiredOption('--network <network>', 'Withdrawal network to use on the exchange, for example ERC20 or BTC')
-    .requiredOption('--withdraw-address <withdrawAddress>', 'Destination address for the withdrawal')
+    .option('--asset <asset>', 'Asset symbol to monitor and withdraw, for example BTC or USDT')
+    .option('--network <network>', 'Withdrawal network to use on the exchange, for example ERC20 or BTC')
+    .option('--withdraw-address <withdrawAddress>', 'Destination address for the withdrawal')
+    .option('--address-book <addressBook>', 'Use a saved address book alias instead of typing address details')
     .option('--max-balance <maxBalance>', 'Trigger when on-exchange asset balance rises above this amount')
     .option('--target-balance <targetBalance>', 'After a quantity-based trigger, withdraw back down to this remaining balance', '0')
     .option('--max-balance-usdt <maxBalanceUsdt>', 'Trigger when the estimated USDT value rises above this amount')
@@ -1040,28 +1300,38 @@ async function main(): Promise<void> {
     .option('--max-withdraw-amount <maxWithdrawAmount>', 'Reject withdraws larger than this amount', '999999999')
     .option('--withdraw-tag <withdrawTag>', 'Optional memo, tag, or payment ID required by some networks and destinations')
     .action((options: {
-      account: string; asset: string; network: string; withdrawAddress: string; maxBalance?: string; targetBalance: string;
+      account: string; asset?: string; network?: string; withdrawAddress?: string; addressBook?: string; maxBalance?: string; targetBalance: string;
       maxBalanceUsdt?: string; targetBalanceUsdt?: string; minWithdrawAmount: string; maxWithdrawAmount: string; withdrawTag?: string;
     }, command) => {
       const account = resolveAccount(context, options.account);
-      const rule = buildAssetRule({
+      const destination = buildRuleDestination(context, {
         accountName: account.name,
         asset: options.asset,
         network: options.network,
         withdrawAddress: options.withdrawAddress,
+        withdrawTag: options.withdrawTag,
+        addressBook: options.addressBook,
+      });
+      const rule = buildAssetRule({
+        accountName: account.name,
+        asset: destination.asset,
+        network: destination.network,
+        withdrawAddress: destination.withdrawAddress,
         maxBalance: options.maxBalance,
         targetBalance: options.targetBalance,
         maxBalanceUsdt: options.maxBalanceUsdt,
         targetBalanceUsdt: options.targetBalanceUsdt,
         minWithdrawAmount: options.minWithdrawAmount,
         maxWithdrawAmount: options.maxWithdrawAmount,
-        withdrawTag: options.withdrawTag,
+        withdrawTag: destination.withdrawTag,
+        addressBookAlias: destination.addressBookAlias,
       });
       void command;
       return validateAssetRuleForExchange(rule).then(() => {
         context.configService.saveAssetRule(rule);
         printSection('Asset rule saved', [
           `${rule.asset} on ${rule.network} is now configured for ${rule.accountName}.`,
+          `Destination source: ${rule.addressBookAlias ? `address-book/${rule.addressBookAlias}` : 'inline address'}.`,
           `Target balance: ${rule.targetBalance}. Max balance: ${rule.maxBalance}.`,
           `USDT thresholds: target ${rule.targetBalanceUsdt ?? '-'}, max ${rule.maxBalanceUsdt ?? '-'}.`,
           `Rule is enabled and ready to evaluate.`,
@@ -1077,6 +1347,7 @@ async function main(): Promise<void> {
     .requiredOption('--asset <asset>')
     .option('--network <network>')
     .option('--withdraw-address <withdrawAddress>')
+    .option('--address-book <addressBook>')
     .option('--max-balance <maxBalance>')
     .option('--target-balance <targetBalance>')
     .option('--max-balance-usdt <maxBalanceUsdt>')
@@ -1085,24 +1356,41 @@ async function main(): Promise<void> {
     .option('--max-withdraw-amount <maxWithdrawAmount>')
     .option('--withdraw-tag <withdrawTag>')
     .action((options: {
-      account: string; asset: string; network?: string; withdrawAddress?: string; maxBalance?: string; targetBalance?: string;
+      account: string; asset: string; network?: string; withdrawAddress?: string; addressBook?: string; maxBalance?: string; targetBalance?: string;
       maxBalanceUsdt?: string; targetBalanceUsdt?: string; minWithdrawAmount?: string; maxWithdrawAmount?: string; withdrawTag?: string;
     }) => {
       const existing = context.configService.listAssetRules(options.account).find((item) => item.asset === options.asset);
       if (!existing) {
         throw new Error(`Asset rule not found: ${options.account}/${options.asset}`);
       }
+      const destination = options.addressBook
+        ? buildRuleDestination(context, {
+            accountName: existing.accountName,
+            asset: existing.asset,
+            network: options.network,
+            withdrawAddress: options.withdrawAddress,
+            withdrawTag: options.withdrawTag,
+            addressBook: options.addressBook,
+          })
+        : {
+            asset: existing.asset,
+            network: options.network ?? existing.network,
+            withdrawAddress: options.withdrawAddress ?? existing.withdrawAddress,
+            withdrawTag: options.withdrawTag ?? existing.withdrawTag,
+            addressBookAlias: options.network || options.withdrawAddress || options.withdrawTag ? undefined : existing.addressBookAlias,
+          };
       const rule = {
         ...existing,
-        network: options.network ?? existing.network,
-        withdrawAddress: options.withdrawAddress ?? existing.withdrawAddress,
+        network: destination.network,
+        withdrawAddress: destination.withdrawAddress,
         maxBalance: options.maxBalance ?? existing.maxBalance,
         targetBalance: options.targetBalance ?? existing.targetBalance,
         maxBalanceUsdt: options.maxBalanceUsdt ?? existing.maxBalanceUsdt,
         targetBalanceUsdt: options.targetBalanceUsdt ?? existing.targetBalanceUsdt,
         minWithdrawAmount: options.minWithdrawAmount ?? existing.minWithdrawAmount,
         maxWithdrawAmount: options.maxWithdrawAmount ?? existing.maxWithdrawAmount,
-        withdrawTag: options.withdrawTag ?? existing.withdrawTag,
+        withdrawTag: destination.withdrawTag,
+        addressBookAlias: destination.addressBookAlias,
       };
       return validateAssetRuleForExchange(rule).then(() => {
         context.configService.saveAssetRule(rule);
@@ -1144,7 +1432,7 @@ async function main(): Promise<void> {
     .action(({ account }: { account: string }) => {
       const rules = context.configService.listAssetRules(account);
       if (rules.length === 0) {
-        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`);
+        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --address-book treasury --max-balance 1000 --target-balance 200`);
         return;
       }
 
@@ -1152,7 +1440,7 @@ async function main(): Promise<void> {
         `${account} has ${pluralize(rules.length, 'withdrawal rule')}.`,
       ]);
       for (const rule of rules) {
-        process.stdout.write(`  ${rule.asset} on ${rule.network}: target ${rule.targetBalance}, max ${rule.maxBalance}, enabled ${rule.enabled ? 'yes' : 'no'}.\n`);
+        process.stdout.write(`  ${rule.asset} on ${rule.network}: target ${rule.targetBalance}, max ${rule.maxBalance}, enabled ${rule.enabled ? 'yes' : 'no'}, destination ${rule.addressBookAlias ?? 'inline'}.\n`);
       }
     });
 
@@ -1176,7 +1464,7 @@ async function main(): Promise<void> {
 
   addMasterPasswordOption(balanceCommand
     .command('check-one')
-    .description('Run one balance and API health check for an account')
+    .description('Read balances for one account')
     .requiredOption('-a, --account <account>'))
     .action(async ({ account, masterPassword, password }: { account: string; masterPassword?: string; password?: string }) => {
       await runBalanceCheck(context, account, resolveMasterPasswordOption({ masterPassword, password }));
@@ -1204,7 +1492,7 @@ async function main(): Promise<void> {
 
   addMasterPasswordOption(balanceCommand
     .command('check-all')
-    .description('Run one balance and API health check for every configured account'))
+    .description('Read balances for every configured account'))
     .action(async ({ masterPassword, password }: { masterPassword?: string; password?: string }) => {
       await runBalanceAllCheck(resolveMasterPasswordOption({ masterPassword, password }), false);
     });
@@ -1247,7 +1535,7 @@ async function main(): Promise<void> {
       if (rules.length === 0) {
         printSection('Withdraw check skipped', [
           `${account} has no enabled withdrawal rules to evaluate.`,
-          `Next step: mexc-monitor asset-rule add -a ${account} --asset USDT --network ERC20 --withdraw-address 0xabc...`,
+          `Next step: mexc-monitor asset-rule add -a ${account} --address-book treasury --max-balance 1000 --target-balance 200`,
         ]);
         return;
       }
@@ -1351,33 +1639,6 @@ async function main(): Promise<void> {
       printDoctorSummary(context, account);
     });
 
-  program
-    .command('status')
-    .description('Show the latest runtime state')
-    .option('-a, --account <account>')
-    .option('--asset <asset>')
-    .action(({ account, asset }: { account?: string; asset?: string }) => {
-      const rows = context.runtimeService.listRuntime({
-        accountName: account,
-        asset,
-      });
-
-      if (rows.length === 0) {
-        printEmptyState('No runtime state found for the current filter.');
-        return;
-      }
-
-      printSection('Runtime status', [
-        `Showing ${pluralize(rows.length, 'runtime entry')}.`,
-        `Account filter: ${formatFilterValue(account)}.`,
-        `Asset filter: ${formatFilterValue(asset)}.`,
-      ]);
-      for (const row of rows) {
-        printRuntimeCard(row.accountName, row.asset, row);
-      }
-      printDivider();
-    });
-
   program.command('logs')
     .description('Show recent audit logs')
     .option('-a, --account <account>')
@@ -1409,8 +1670,8 @@ async function main(): Promise<void> {
       printDivider();
     });
 
-  program.command('history')
-    .description('Show recent withdraw history')
+  withdrawCommand.command('attempts')
+    .description('Show recent withdraw attempts and recorded outcomes')
     .option('-a, --account <account>')
     .option('--asset <asset>')
     .option('--status <status>')
@@ -1426,12 +1687,12 @@ async function main(): Promise<void> {
       });
 
       if (items.length === 0) {
-        printEmptyState('No withdraw history matched the current filter.');
+        printEmptyState('No withdraw attempts matched the current filter.');
         return;
       }
 
-      printSection('Withdraw history', [
-        `Showing ${pluralize(items.length, 'history entry')}.`,
+      printSection('Withdraw attempts', [
+        `Showing ${pluralize(items.length, 'attempt entry')}.`,
         `Account filter: ${formatFilterValue(account)}.`,
         `Asset filter: ${formatFilterValue(asset)}.`,
         `Status filter: ${formatFilterValue(status)}.`,

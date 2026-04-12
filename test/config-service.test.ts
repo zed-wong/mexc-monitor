@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 
 import { ConfigService } from '../src/services/config-service';
 import { AccountRepo } from '../src/db/repo/account-repo';
+import { AddressBookRepo } from '../src/db/repo/address-book-repo';
 import { AssetRuleRepo } from '../src/db/repo/asset-rule-repo';
 import { runSchema } from '../src/db/schema';
 import type { AccountConfig, AssetRule } from '../src/core/types';
@@ -11,7 +12,7 @@ import type { StoredSecrets } from '../src/db/types';
 function createConfigService(): ConfigService {
   const db = new Database(':memory:', { strict: true });
   runSchema(db);
-  return new ConfigService(new AccountRepo(db), new AssetRuleRepo(db));
+  return new ConfigService(new AccountRepo(db), new AssetRuleRepo(db), new AddressBookRepo(db));
 }
 
 const account: AccountConfig = {
@@ -72,5 +73,34 @@ describe('ConfigService', () => {
       targetBalanceUsdt: '1001',
       maxBalanceUsdt: '1000',
     })).toThrow('targetBalanceUsdt and maxBalanceUsdt must both be set and targetBalanceUsdt must be <= maxBalanceUsdt');
+  });
+
+  test('persists address book entries and renames them with the account', () => {
+    const service = createConfigService();
+    service.saveAccount(account, secrets);
+    service.saveAddressBookEntry({
+      accountName: 'main',
+      alias: 'treasury',
+      asset: 'USDT',
+      network: 'ERC20',
+      address: '0xabc',
+      tag: 'memo-1',
+      note: 'primary vault',
+    });
+
+    expect(service.getAddressBookEntry('main', 'treasury')).toMatchObject({
+      alias: 'treasury',
+      asset: 'USDT',
+      network: 'ERC20',
+      address: '0xabc',
+    });
+
+    service.renameAccount('main', 'ops');
+
+    expect(service.getAddressBookEntry('main', 'treasury')).toBeNull();
+    expect(service.getAddressBookEntry('ops', 'treasury')).toMatchObject({
+      accountName: 'ops',
+      alias: 'treasury',
+    });
   });
 });

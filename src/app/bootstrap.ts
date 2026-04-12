@@ -11,6 +11,7 @@ import type { AccountConfig, Credentials } from '../core/types';
 import { createExchangeAdapter } from '../exchange/exchange-factory';
 import { sealCredentials } from '../crypto/cipher';
 import { AccountRepo } from '../db/repo/account-repo';
+import { AddressBookRepo } from '../db/repo/address-book-repo';
 import { AssetRuleRepo } from '../db/repo/asset-rule-repo';
 import { CliAuthRepo } from '../db/repo/cli-auth-repo';
 import { CliAuthService } from '../services/cli-auth-service';
@@ -36,6 +37,7 @@ export interface AppContext {
   eventLogRepo: EventLogRepo;
   withdrawHistoryRepo: WithdrawHistoryRepo;
   accountRepo: AccountRepo;
+  addressBookRepo: AddressBookRepo;
   assetRuleRepo: AssetRuleRepo;
   runtimeRepo: RuntimeRepo;
   cliAuthRepo: CliAuthRepo;
@@ -47,13 +49,14 @@ export function createAppContext(): AppContext {
   runSchema(db);
 
   const accountRepo = new AccountRepo(db);
+  const addressBookRepo = new AddressBookRepo(db);
   const assetRuleRepo = new AssetRuleRepo(db);
   const runtimeRepo = new RuntimeRepo(db);
   const eventLogRepo = new EventLogRepo(db);
   const withdrawHistoryRepo = new WithdrawHistoryRepo(db);
   const cliAuthRepo = new CliAuthRepo(db);
 
-  const configService = new ConfigService(accountRepo, assetRuleRepo);
+  const configService = new ConfigService(accountRepo, assetRuleRepo, addressBookRepo);
   const cliAuthService = new CliAuthService(cliAuthRepo);
   const credentialService = new CredentialService(configService, cliAuthService);
   const auditService = new AuditService(eventLogRepo, withdrawHistoryRepo);
@@ -67,6 +70,7 @@ export function createAppContext(): AppContext {
     eventLogRepo,
     withdrawHistoryRepo,
     accountRepo,
+    addressBookRepo,
     assetRuleRepo,
     runtimeRepo,
     cliAuthRepo,

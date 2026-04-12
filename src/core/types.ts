@@ -18,6 +18,7 @@ export interface AssetRule {
   network: string;
   withdrawAddress: string;
   withdrawTag?: string;
+  addressBookAlias?: string;
   targetBalance: string;
   maxBalance: string;
   targetBalanceUsdt?: string;
@@ -25,6 +26,16 @@ export interface AssetRule {
   minWithdrawAmount: string;
   maxWithdrawAmount: string;
   enabled: boolean;
+}
+
+export interface AddressBookEntry {
+  accountName: string;
+  alias: string;
+  asset: string;
+  network: string;
+  address: string;
+  tag?: string;
+  note?: string;
 }
 
 export interface Credentials {

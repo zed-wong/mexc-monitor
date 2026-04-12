@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
-import type { AccountConfig, AssetRule } from '../core/types';
+import type { AccountConfig, AddressBookEntry, AssetRule } from '../core/types';
 import type { StoredSecrets } from '../db/types';
 import type { AccountRepo } from '../db/repo/account-repo';
+import type { AddressBookRepo } from '../db/repo/address-book-repo';
 import type { AssetRuleRepo } from '../db/repo/asset-rule-repo';
 import { decimal } from '../utils/decimal';
 
@@ -30,6 +31,7 @@ const assetRuleSchema = z.object({
   network: z.string().min(1),
   withdrawAddress: z.string().min(1),
   withdrawTag: z.string().optional(),
+  addressBookAlias: z.string().min(1).optional(),
   targetBalance: amountString,
   maxBalance: amountString,
   targetBalanceUsdt: amountString.optional(),
@@ -55,10 +57,21 @@ const assetRuleSchema = z.object({
   message: 'minWithdrawAmount must be <= maxWithdrawAmount',
 });
 
+const addressBookEntrySchema = z.object({
+  accountName: z.string().min(1),
+  alias: z.string().min(1),
+  asset: z.string().min(1),
+  network: z.string().min(1),
+  address: z.string().min(1),
+  tag: z.string().optional(),
+  note: z.string().optional(),
+});
+
 export class ConfigService {
   constructor(
     private readonly accountRepo: AccountRepo,
     private readonly assetRuleRepo: AssetRuleRepo,
+    private readonly addressBookRepo: AddressBookRepo,
   ) {}
 
   getAccount(name: string): AccountConfig | null {
@@ -118,6 +131,7 @@ export class ConfigService {
   renameAccount(from: string, to: string): void {
     this.accountRepo.rename(from, to);
     this.assetRuleRepo.renameAccount(from, to);
+    this.addressBookRepo.renameAccount(from, to);
   }
 
   listAssetRules(accountName?: string): AssetRule[] {
@@ -131,5 +145,22 @@ export class ConfigService {
 
   removeAssetRule(accountName: string, asset: string): void {
     this.assetRuleRepo.remove(accountName, asset);
+  }
+
+  getAddressBookEntry(accountName: string, alias: string): AddressBookEntry | null {
+    return this.addressBookRepo.get(accountName, alias);
+  }
+
+  listAddressBookEntries(accountName?: string): AddressBookEntry[] {
+    return this.addressBookRepo.list(accountName);
+  }
+
+  saveAddressBookEntry(entry: AddressBookEntry): void {
+    addressBookEntrySchema.parse(entry);
+    this.addressBookRepo.save(entry);
+  }
+
+  removeAddressBookEntry(accountName: string, alias: string): void {
+    this.addressBookRepo.remove(accountName, alias);
   }
 }
