@@ -2,7 +2,9 @@
   "name": "mexc-monitor",
   "version": "1.0.0",
   "description": "CLI-based exchange balance monitor",
-  "main": "dist/index.js",
+  "bin": {
+    "mexc-monitor":"./dist/index.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "bun run src/index.ts",

@@ -12,7 +12,7 @@ It is built around a single global CLI master password, encrypted credential sto
 - Stores MEXC API credentials in SQLite with encryption
 - Uses one global CLI master password for all accounts
 - Supports threshold-based withdrawals by asset amount or estimated `USDT` value
-- Tracks runtime state, audit logs, and withdraw history
+- Tracks audit logs and withdraw attempt history
 - Provides a `doctor` command for operator guidance
 - Supports single-account and multi-account workflows
 
@@ -55,7 +55,6 @@ This database contains:
 - account configuration
 - encrypted API credentials
 - asset withdrawal rules
-- runtime state
 - audit logs
 - withdraw history
 - CLI master-password metadata
@@ -260,17 +259,13 @@ For `live` accounts, add `--confirm-live` to `withdraw check-one`, `withdraw che
 bun run src/index.ts doctor
 bun run src/index.ts doctor -a main
 
-bun run src/index.ts status
-bun run src/index.ts status -a main
-bun run src/index.ts status -a main --asset BTC
-
 bun run src/index.ts logs
 bun run src/index.ts logs -a main --asset BTC
 bun run src/index.ts logs --level error
 
-bun run src/index.ts history
-bun run src/index.ts history -a main
-bun run src/index.ts history --status failed
+bun run src/index.ts withdraw attempts
+bun run src/index.ts withdraw attempts -a main
+bun run src/index.ts withdraw attempts --status failed
 ```
 
 ### 4. Manage accounts
@@ -344,7 +339,7 @@ Additional controls:
 2. Verify API access with `balance check-one`
 3. Add one or more asset rules
 4. Inspect the first withdraw decision with `withdraw check-one`
-5. Review runtime, logs, and history with `doctor`, `status`, `logs`, and `history`
+5. Review logs and withdraw attempts with `doctor`, `logs`, and `withdraw attempts`
 6. Use `withdraw check-one-loop` in `dry_run`
 7. Switch to `live` only after the results look correct
 
