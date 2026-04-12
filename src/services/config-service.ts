@@ -32,11 +32,25 @@ const assetRuleSchema = z.object({
   withdrawTag: z.string().optional(),
   targetBalance: amountString,
   maxBalance: amountString,
+  targetBalanceUsdt: amountString.optional(),
+  maxBalanceUsdt: amountString.optional(),
   minWithdrawAmount: amountString,
   maxWithdrawAmount: amountString,
   enabled: z.boolean(),
 }).refine((value) => decimal(value.targetBalance).lte(value.maxBalance), {
   message: 'targetBalance must be <= maxBalance',
+}).refine((value) => {
+  if (!value.targetBalanceUsdt && !value.maxBalanceUsdt) {
+    return true;
+  }
+
+  if (!value.targetBalanceUsdt || !value.maxBalanceUsdt) {
+    return false;
+  }
+
+  return decimal(value.targetBalanceUsdt).lte(value.maxBalanceUsdt);
+}, {
+  message: 'targetBalanceUsdt and maxBalanceUsdt must both be set and targetBalanceUsdt must be <= maxBalanceUsdt',
 }).refine((value) => decimal(value.minWithdrawAmount).lte(value.maxWithdrawAmount), {
   message: 'minWithdrawAmount must be <= maxWithdrawAmount',
 });

@@ -26,4 +26,14 @@ describe('computeWithdrawAmount', () => {
     expect(computeWithdrawAmount('1200', baseRule)).toBe('1000');
     expect(computeWithdrawAmount('1000.5', baseRule)).toBe('800.5');
   });
+
+  test('returns the amount needed to return to target USDT value', () => {
+    expect(computeWithdrawAmount('2', {
+      ...baseRule,
+      maxBalance: '999999999',
+      targetBalance: '0',
+      maxBalanceUsdt: '100',
+      targetBalanceUsdt: '50',
+    }, '60')).toBe('1.1666666666666666667');
+  });
 });

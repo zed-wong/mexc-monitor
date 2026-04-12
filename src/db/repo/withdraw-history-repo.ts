@@ -10,10 +10,10 @@ export class WithdrawHistoryRepo {
     this.db.prepare(
       `INSERT INTO withdraw_history (
         account_name, created_at, operation_id, exchange_id, mode, asset, network, amount,
-        address_masked, status, txid, reason, error_message, raw_response_json
+        quote_asset, quote_price, estimated_value, address_masked, status, txid, reason, error_message, raw_response_json
       ) VALUES (
         @account_name, @created_at, @operation_id, @exchange_id, @mode, @asset, @network, @amount,
-        @address_masked, @status, @txid, @reason, @error_message, @raw_response_json
+        @quote_asset, @quote_price, @estimated_value, @address_masked, @status, @txid, @reason, @error_message, @raw_response_json
       )`,
     ).run({
       account_name: item.accountName,
@@ -24,6 +24,9 @@ export class WithdrawHistoryRepo {
       asset: item.asset,
       network: item.network,
       amount: item.amount,
+      quote_asset: item.quoteAsset ?? null,
+      quote_price: item.quotePrice ?? null,
+      estimated_value: item.estimatedValue ?? null,
       address_masked: item.addressMasked,
       status: item.status,
       txid: item.txid ?? null,
@@ -68,6 +71,9 @@ export class WithdrawHistoryRepo {
       asset: String(row.asset),
       network: String(row.network),
       amount: String(row.amount),
+      quoteAsset: row.quote_asset ? String(row.quote_asset) : undefined,
+      quotePrice: row.quote_price ? String(row.quote_price) : undefined,
+      estimatedValue: row.estimated_value ? String(row.estimated_value) : undefined,
       addressMasked: String(row.address_masked),
       status: row.status as WithdrawHistoryItem['status'],
       txid: row.txid ? String(row.txid) : undefined,

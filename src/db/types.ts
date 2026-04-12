@@ -4,3 +4,8 @@ export interface StoredSecrets {
   credentialsTag: Buffer;
   kdfSalt: Buffer;
 }
+
+export interface StoredCliAuth {
+  passwordHash: Buffer;
+  kdfSalt: Buffer;
+}

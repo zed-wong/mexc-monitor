@@ -31,6 +31,30 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
       .map(([asset, free]) => ({ asset, free: String(free) }));
   }
 
+  async fetchQuotePrice(asset: string, quoteAsset: string): Promise<string | null> {
+    if (!this.exchange) {
+      throw new Error('Exchange not initialized');
+    }
+
+    if (asset === quoteAsset) {
+      return '1';
+    }
+
+    const symbol = `${asset}/${quoteAsset}`;
+    if (!(symbol in this.exchange.markets)) {
+      return null;
+    }
+
+    const ticker = await this.exchange.fetchTicker(symbol);
+    const price = typeof ticker.last === 'number'
+      ? ticker.last
+      : typeof ticker.close === 'number'
+        ? ticker.close
+        : undefined;
+
+    return price !== undefined ? String(price) : null;
+  }
+
   abstract withdraw(input: Parameters<ExchangeAdapter['withdraw']>[0]): ReturnType<ExchangeAdapter['withdraw']>;
   abstract validateConfig(input: Parameters<ExchangeAdapter['validateConfig']>[0]): ReturnType<ExchangeAdapter['validateConfig']>;
   abstract healthCheck(): Promise<void>;

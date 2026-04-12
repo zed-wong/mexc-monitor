@@ -20,6 +20,8 @@ export interface AssetRule {
   withdrawTag?: string;
   targetBalance: string;
   maxBalance: string;
+  targetBalanceUsdt?: string;
+  maxBalanceUsdt?: string;
   minWithdrawAmount: string;
   maxWithdrawAmount: string;
   enabled: boolean;
@@ -69,6 +71,9 @@ export interface WithdrawHistoryItem {
   asset: string;
   network: string;
   amount: string;
+  quoteAsset?: string;
+  quotePrice?: string;
+  estimatedValue?: string;
   addressMasked: string;
   status: WithdrawStatus;
   txid?: string;

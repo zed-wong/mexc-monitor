@@ -12,13 +12,15 @@ import { createExchangeAdapter } from '../exchange/exchange-factory';
 import { sealCredentials } from '../crypto/cipher';
 import { AccountRepo } from '../db/repo/account-repo';
 import { AssetRuleRepo } from '../db/repo/asset-rule-repo';
+import { CliAuthRepo } from '../db/repo/cli-auth-repo';
+import { CliAuthService } from '../services/cli-auth-service';
 
 const DEFAULT_ACCOUNT: AccountConfig = {
   name: 'default',
   exchangeId: 'mexc',
   checkIntervalMs: 30000,
   withdrawCooldownMs: 600000,
-  mode: 'dry_run',
+  mode: 'live',
 };
 
 const EMPTY_CREDENTIALS: Credentials = {
@@ -36,6 +38,8 @@ export interface AppContext {
   accountRepo: AccountRepo;
   assetRuleRepo: AssetRuleRepo;
   runtimeRepo: RuntimeRepo;
+  cliAuthRepo: CliAuthRepo;
+  cliAuthService: CliAuthService;
 }
 
 export function createAppContext(): AppContext {
@@ -47,9 +51,11 @@ export function createAppContext(): AppContext {
   const runtimeRepo = new RuntimeRepo(db);
   const eventLogRepo = new EventLogRepo(db);
   const withdrawHistoryRepo = new WithdrawHistoryRepo(db);
+  const cliAuthRepo = new CliAuthRepo(db);
 
   const configService = new ConfigService(accountRepo, assetRuleRepo);
-  const credentialService = new CredentialService(configService);
+  const cliAuthService = new CliAuthService(cliAuthRepo);
+  const credentialService = new CredentialService(configService, cliAuthService);
   const auditService = new AuditService(eventLogRepo, withdrawHistoryRepo);
   const runtimeService = new RuntimeService(runtimeRepo);
 
@@ -63,6 +69,8 @@ export function createAppContext(): AppContext {
     accountRepo,
     assetRuleRepo,
     runtimeRepo,
+    cliAuthRepo,
+    cliAuthService,
   };
 }
 export { DEFAULT_ACCOUNT, EMPTY_CREDENTIALS, sealCredentials, createExchangeAdapter };

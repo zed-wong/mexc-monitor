@@ -6,6 +6,7 @@ import type { AuditService } from '../services/audit-service';
 import type { RuntimeService } from '../services/runtime-service';
 import { maskAddress } from '../utils/mask';
 import { nowIso } from '../utils/time';
+import { decimal } from '../utils/decimal';
 
 export class WithdrawService {
   constructor(
@@ -19,6 +20,14 @@ export class WithdrawService {
     const operationId = crypto.randomUUID();
     const createdAt = nowIso();
     const addressMasked = maskAddress(rule.withdrawAddress);
+    const quoteAsset = 'USDT';
+    let quotePrice: string | null = null;
+    try {
+      quotePrice = await this.exchange.fetchQuotePrice(rule.asset, quoteAsset);
+    } catch {
+      quotePrice = null;
+    }
+    const estimatedValue = quotePrice ? decimal(amount).mul(quotePrice).toFixed() : undefined;
 
     this.runtimeService.updateRuntime(scope, {
       ...runtime,
@@ -35,6 +44,9 @@ export class WithdrawService {
         asset: rule.asset,
         network: rule.network,
         amount,
+        quoteAsset: quotePrice ? quoteAsset : undefined,
+        quotePrice: quotePrice ?? undefined,
+        estimatedValue,
         addressMasked,
         status: 'simulated',
         reason: 'dry_run',
@@ -69,6 +81,9 @@ export class WithdrawService {
         asset: rule.asset,
         network: rule.network,
         amount,
+        quoteAsset: quotePrice ? quoteAsset : undefined,
+        quotePrice: quotePrice ?? undefined,
+        estimatedValue,
         addressMasked,
         status: 'success',
         txid: result.txid,
@@ -91,6 +106,9 @@ export class WithdrawService {
         asset: rule.asset,
         network: rule.network,
         amount,
+        quoteAsset: quotePrice ? quoteAsset : undefined,
+        quotePrice: quotePrice ?? undefined,
+        estimatedValue,
         addressMasked,
         status: 'failed',
         errorMessage: message,

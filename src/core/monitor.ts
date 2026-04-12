@@ -48,6 +48,12 @@ export class Monitor {
 
     try {
       const balance = await this.exchange.fetchFreeBalance(rule.asset);
+      let quotePriceUsdt: string | null = null;
+      try {
+        quotePriceUsdt = await this.exchange.fetchQuotePrice(rule.asset, 'USDT');
+      } catch {
+        quotePriceUsdt = null;
+      }
       const nextRuntime = {
         ...runtime,
         apiStatus: 'healthy' as const,
@@ -57,7 +63,7 @@ export class Monitor {
         lastError: undefined,
       };
       this.runtimeService.updateRuntime(scope, nextRuntime);
-      const amount = computeWithdrawAmount(balance, rule);
+      const amount = computeWithdrawAmount(balance, rule, quotePriceUsdt);
 
       if (!amount) {
         this.auditService.log('info', 'monitor.tick.success', `Account balance ${balance} ${rule.asset}`, undefined, scope);

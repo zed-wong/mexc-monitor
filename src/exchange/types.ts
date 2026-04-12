@@ -23,6 +23,7 @@ export interface ExchangeAdapter {
   init(credentials: Credentials): Promise<void>;
   fetchFreeBalance(asset: string): Promise<string>;
   fetchAllFreeBalances(): Promise<AssetBalance[]>;
+  fetchQuotePrice(asset: string, quoteAsset: string): Promise<string | null>;
   withdraw(input: WithdrawInput): Promise<WithdrawResult>;
   validateConfig(input: { asset: string; network: string; address: string }): Promise<void>;
   healthCheck(): Promise<void>;

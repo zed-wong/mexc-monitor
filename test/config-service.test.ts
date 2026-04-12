@@ -66,5 +66,11 @@ describe('ConfigService', () => {
       minWithdrawAmount: '200',
       maxWithdrawAmount: '100',
     })).toThrow('minWithdrawAmount must be <= maxWithdrawAmount');
+
+    expect(() => service.saveAssetRule({
+      ...baseRule,
+      targetBalanceUsdt: '1001',
+      maxBalanceUsdt: '1000',
+    })).toThrow('targetBalanceUsdt and maxBalanceUsdt must both be set and targetBalanceUsdt must be <= maxBalanceUsdt');
   });
 });
