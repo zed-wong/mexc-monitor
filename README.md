@@ -70,20 +70,17 @@ data/app.db
 ### 1. 创建账户
 
 ```bash
-bun run src/index.ts account set \
-  -a main \
-  --api-key 'your-api-key' \
-  --api-secret 'your-api-secret'
+bun run src/index.ts account add -a main
 ```
 
 默认模式是 `live`。如果你想显式切到 `dry_run`，或者之后再改模式/轮询配置，只需要带 `-a`，例如：
 
 ```bash
-bun run src/index.ts account set -a main --mode dry_run
-bun run src/index.ts account set -a main --interval-ms 10000
+bun run src/index.ts account add -a main --mode dry_run
+bun run src/index.ts account add -a main --interval-ms 10000
 ```
 
-如果你要更新 API 凭证，仍然需要提供 `--api-key` 和 `--api-secret`；CLI 会安全提示输入统一的 `CLI master password`。
+创建新账户时，CLI 会交互式提示输入 API key 和 secret，不会出现在 shell history 里。已有账户如果要轮换凭证，执行 `bun run src/index.ts account add -a main --update-credentials`，CLI 也会交互式提示输入统一的 `CLI master password`、API key 和 secret。
 
 `CLI master password` 是整个命令行工具共用的主密码，不是某个账户专属密码。
 

@@ -13,7 +13,7 @@ import * as readline from 'node:readline';
 
 const EXAMPLES = `
 Examples:
-  mexc-monitor account set -a main --api-key '***' --api-secret '***'
+  mexc-monitor account add -a main
   mexc-monitor asset-rule add -a main --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200
   mexc-monitor auth set-master-password
   mexc-monitor account test -a main --master-password '***'
@@ -208,12 +208,12 @@ function getRecommendedNextSteps(
     : context.configService.listAccounts();
 
   if (accountName && accounts.length === 0) {
-    return [`Create the account first: mexc-monitor account set -a ${accountName} --api-key '***' --api-secret '***'`];
+    return [`Create the account first: mexc-monitor account add -a ${accountName}`];
   }
 
   if (accounts.length === 0) {
     return [
-      "Create an account: mexc-monitor account set -a main --api-key '***' --api-secret '***'",
+      "Create an account: mexc-monitor account add -a main",
       "Then verify exchange access: mexc-monitor account test -a main",
     ];
   }
@@ -810,6 +810,72 @@ async function main(): Promise<void> {
   const accountCommand = program.command('account').description('Manage exchange account');
   const assetRule = program.command('asset-rule').description('Manage asset withdrawal rules');
 
+  async function promptExchangeCredentials(accountName: string): Promise<{ apiKey: string; apiSecret: string }> {
+    process.stdout.write(`Enter exchange credentials for ${accountName}. Input is hidden.\n`);
+    const apiKey = await promptHiddenSecret('MEXC API key: ');
+    const apiSecret = await promptHiddenSecret('MEXC API secret: ');
+    if (!apiKey || !apiSecret) {
+      throw new Error('MEXC API key and secret cannot be empty.');
+    }
+    return { apiKey, apiSecret };
+  }
+
+
+  async function saveAccountFromPrompt(options: {
+    account: string;
+    masterPassword?: string;
+    password?: string;
+    intervalMs?: string;
+    withdrawCooldownMs?: string;
+    mode?: 'dry_run' | 'live';
+    updateCredentials?: boolean;
+  }): Promise<void> {
+    const { account, masterPassword, password, intervalMs, withdrawCooldownMs, mode, updateCredentials } = options;
+
+    if (mode && mode !== 'dry_run' && mode !== 'live') {
+      throw new Error('--mode must be dry_run or live');
+    }
+
+    const existingAccount = context.configService.getAccount(account);
+    const existingSecrets = context.configService.getSecretsForAccount(account);
+    const isNewAccount = !existingAccount;
+    const wantsCredentialUpdate = isNewAccount || Boolean(updateCredentials);
+
+    const providedMasterPassword = resolveMasterPasswordOption({ masterPassword, password });
+    const resolvedPassword = wantsCredentialUpdate
+      ? await resolveMasterPassword(providedMasterPassword, 'CLI master password for ' + account + ': ')
+      : undefined;
+
+    const promptedCredentials = wantsCredentialUpdate
+      ? await promptExchangeCredentials(account)
+      : undefined;
+
+    const sealed = wantsCredentialUpdate
+      ? context.credentialService.updateCredentials(resolvedPassword!, promptedCredentials!)
+      : existingSecrets;
+
+    if (!sealed) {
+      throw new Error(`Credentials not configured for account: ${account}. Re-run with: mexc-monitor account add -a ${account} --update-credentials`);
+    }
+
+    const baseAccount = existingAccount ?? DEFAULT_ACCOUNT;
+    const savedAccount = buildAccountConfig({
+      ...baseAccount,
+      name: account,
+      checkIntervalMs: intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : baseAccount.checkIntervalMs,
+      withdrawCooldownMs: withdrawCooldownMs ? parseIntegerOption('withdraw-cooldown-ms', withdrawCooldownMs) : baseAccount.withdrawCooldownMs,
+      mode: mode ?? baseAccount.mode,
+    });
+
+    context.configService.saveAccount(savedAccount, sealed);
+    printSection(isNewAccount ? 'Account added' : 'Account updated', [
+      `${account} is set to ${savedAccount.mode} mode on MEXC.`,
+      `Check interval: ${savedAccount.checkIntervalMs} ms. Withdraw cooldown: ${savedAccount.withdrawCooldownMs} ms.`,
+      wantsCredentialUpdate ? 'Stored API credentials were updated through the interactive prompt.' : 'Stored API credentials were left unchanged.',
+      `Next step: mexc-monitor account test -a ${account}`,
+    ]);
+  }
+
   authCommand.command('status')
     .description('Show global CLI master password status')
     .action(() => {
@@ -847,77 +913,40 @@ async function main(): Promise<void> {
       ]);
     });
   addMasterPasswordOption(accountCommand
-    .command('set')
+    .command('add')
     .description('Create or update an account and store encrypted API credentials')
     .requiredOption('-a, --account <account>')
-    .option('--api-key <apiKey>')
-    .option('--api-secret <apiSecret>')
     .option('--interval-ms <intervalMs>')
     .option('--withdraw-cooldown-ms <withdrawCooldownMs>')
-    .option('--mode <mode>'))
-    .action(async ({ account, masterPassword, password, apiKey, apiSecret, intervalMs, withdrawCooldownMs, mode }: {
+    .option('--mode <mode>')
+    .option('--update-credentials'))
+    .action(saveAccountFromPrompt);
+
+  addMasterPasswordOption(accountCommand
+    .command('set')
+    .description('Deprecated alias for account add')
+    .requiredOption('-a, --account <account>')
+    .option('--interval-ms <intervalMs>')
+    .option('--withdraw-cooldown-ms <withdrawCooldownMs>')
+    .option('--mode <mode>')
+    .option('--update-credentials'))
+    .action(async (options: {
       account: string;
       masterPassword?: string;
       password?: string;
-      apiKey?: string;
-      apiSecret?: string;
       intervalMs?: string;
       withdrawCooldownMs?: string;
       mode?: 'dry_run' | 'live';
+      updateCredentials?: boolean;
     }) => {
-      if (mode && mode !== 'dry_run' && mode !== 'live') {
-        throw new Error('--mode must be dry_run or live');
-      }
-
-      const existingAccount = context.configService.getAccount(account);
-      const existingSecrets = context.configService.getSecretsForAccount(account);
-      const isNewAccount = !existingAccount;
-      const hasCredentialFields = Boolean(apiKey || apiSecret);
-      const wantsCredentialUpdate = isNewAccount || hasCredentialFields;
-
-      if (isNewAccount && (!apiKey || !apiSecret)) {
-        throw new Error('Creating a new account requires --api-key and --api-secret. CLI master password will be prompted securely if omitted.');
-      }
-
-      if (!isNewAccount && hasCredentialFields && (!apiKey || !apiSecret)) {
-        throw new Error('Updating credentials requires --api-key and --api-secret together. CLI master password will be prompted securely if omitted.');
-      }
-
-      const providedMasterPassword = resolveMasterPasswordOption({ masterPassword, password });
-      const resolvedPassword = wantsCredentialUpdate
-        ? await resolveMasterPassword(providedMasterPassword, 'CLI master password for ' + account + ': ')
-        : undefined;
-
-      const sealed = wantsCredentialUpdate
-        ? context.credentialService.updateCredentials(resolvedPassword!, { apiKey: apiKey!, apiSecret: apiSecret! })
-        : existingSecrets;
-
-      if (!sealed) {
-        throw new Error(`Credentials not configured for account: ${account}`);
-      }
-
-      const baseAccount = existingAccount ?? DEFAULT_ACCOUNT;
-      const savedAccount = buildAccountConfig({
-        ...baseAccount,
-        name: account,
-        checkIntervalMs: intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : baseAccount.checkIntervalMs,
-        withdrawCooldownMs: withdrawCooldownMs ? parseIntegerOption('withdraw-cooldown-ms', withdrawCooldownMs) : baseAccount.withdrawCooldownMs,
-        mode: mode ?? baseAccount.mode,
-      });
-
-      context.configService.saveAccount(savedAccount, sealed);
-      printSection(isNewAccount ? 'Account added' : 'Account updated', [
-        `${account} is set to ${savedAccount.mode} mode on MEXC.`,
-        `Check interval: ${savedAccount.checkIntervalMs} ms. Withdraw cooldown: ${savedAccount.withdrawCooldownMs} ms.`,
-        wantsCredentialUpdate ? 'Stored API credentials were updated.' : 'Stored API credentials were left unchanged.',
-        `Next step: mexc-monitor account test -a ${account}`,
-      ]);
+      process.stdout.write('`account set` is deprecated. Use `account add` instead.\n');
+      await saveAccountFromPrompt(options);
     });
 
   accountCommand.command('list').description('List configured accounts').action(() => {
     const accounts = context.configService.listAccounts();
     if (accounts.length === 0) {
-      printEmptyState("No accounts configured yet. Create one with: mexc-monitor account set -a main --api-key '***' --api-secret '***'");
+      printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
       return;
     }
 
@@ -965,7 +994,7 @@ async function main(): Promise<void> {
   ).action(async ({ masterPassword, password }: { masterPassword?: string; password?: string }) => {
       const accounts = context.configService.listAccounts();
       if (accounts.length === 0) {
-        printEmptyState("No accounts configured yet. Create one with: mexc-monitor account set -a main --api-key '***' --api-secret '***'");
+        printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
         return;
       }
 
