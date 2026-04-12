@@ -16,10 +16,11 @@ Examples:
   mexc-monitor account add -a main
   mexc-monitor asset-rule add -a main --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200
   mexc-monitor auth set-master-password
-  mexc-monitor account test -a main --master-password '***'
-  mexc-monitor account test-all --master-password '***'
-  mexc-monitor withdraw -a main --master-password '***'
-  mexc-monitor watch-withdraw -a main --interval-ms 30000 --master-password '***'
+  mexc-monitor balance check-one -a main --master-password '***'
+  mexc-monitor balance check-all --master-password '***'
+  mexc-monitor balance check-all-loop --interval-ms 30000 --master-password '***'
+  mexc-monitor withdraw check-one -a main --master-password '***'
+  mexc-monitor withdraw check-one-loop -a main --interval-ms 30000 --master-password '***'
 `;
 
 function formatValue(value: unknown): string {
@@ -231,7 +232,7 @@ function getRecommendedNextSteps(
 
     if (runtimeRows.length === 0) {
       steps.push(`Verify exchange access and inspect balances for ${account.name}: mexc-monitor account test -a ${account.name}`);
-      steps.push(`Run one withdraw simulation for ${account.name}: mexc-monitor withdraw -a ${account.name}`);
+      steps.push(`Run one withdraw simulation for ${account.name}: mexc-monitor withdraw check-one -a ${account.name}`);
       continue;
     }
 
@@ -241,7 +242,7 @@ function getRecommendedNextSteps(
     }
 
     steps.push(`Inspect current runtime for ${account.name}: mexc-monitor status -a ${account.name}`);
-    steps.push(`Start continuous monitoring for ${account.name}: mexc-monitor watch-withdraw -a ${account.name} --interval-ms ${account.checkIntervalMs}`);
+    steps.push(`Start continuous monitoring for ${account.name}: mexc-monitor withdraw check-one-loop -a ${account.name} --interval-ms ${account.checkIntervalMs}`);
 
     if (account.mode === 'dry_run') {
       steps.push(`Only after dry-run results look correct, switch ${account.name} to live mode and use --confirm-live for real withdrawals`);
@@ -644,6 +645,19 @@ async function runAccountHealthCheck(
   await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
 }
 
+async function runBalanceCheck(
+  context: ReturnType<typeof createAppContext>,
+  accountName: string,
+  password?: string,
+  promptLabel?: string,
+): Promise<void> {
+  const result = await fetchAccountHealthCheck(context, accountName, password, promptLabel);
+
+  process.stdout.write(`${result.account.name} (${result.account.exchangeId})\n`);
+  process.stdout.write(`  Mode: ${result.account.mode}\n`);
+  await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
+}
+
 function resolveAccount(context: ReturnType<typeof createAppContext>, accountName: string): AccountConfig {
   const account = context.configService.getAccount(accountName);
   if (!account) {
@@ -674,6 +688,7 @@ async function runWatchLoop(
   credentials: Credentials,
   account: AccountConfig,
   assetRules: AssetRule[],
+  autoWithdraw = true,
 ): Promise<void> {
   const exchange = await initExchange(credentials);
   let cycle = 0;
@@ -687,17 +702,20 @@ async function runWatchLoop(
       `assets=${balances.length}`,
       `enabledRules=${enabledRuleCount}`,
       `mode=${account.mode}`,
+      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
     ]);
     await printBalancesWithUsdtValue(exchange, balances, '  ');
 
-    if (enabledRuleCount === 0) {
-      process.stdout.write('  No enabled asset rules. Skipping withdraw checks.\n');
-    }
-    for (const rule of assetRules.filter((item) => item.enabled)) {
-      const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-      const riskControl = new RiskControl();
-      const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-      await monitor.tick(account, rule, credentials);
+    if (autoWithdraw) {
+      if (enabledRuleCount === 0) {
+        process.stdout.write('  No enabled asset rules. Skipping withdraw checks.\n');
+      }
+      for (const rule of assetRules.filter((item) => item.enabled)) {
+        const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+        const riskControl = new RiskControl();
+        const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+        await monitor.tick(account, rule, credentials);
+      }
     }
 
     process.stdout.write(`  Sleeping ${account.checkIntervalMs} ms before next cycle.\n`);
@@ -709,6 +727,7 @@ async function runWatchAll(
   context: ReturnType<typeof createAppContext>,
   password?: string,
   intervalMs?: number,
+  autoWithdraw = false,
 ): Promise<void> {
   const resolvedPassword = await resolveMasterPassword(password, 'CLI master password for all accounts: ');
   let cycle = 0;
@@ -718,6 +737,7 @@ async function runWatchAll(
       `cycle=${cycle}`,
       `accounts=${context.configService.listAccounts().length}`,
       `intervalMs=${intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs}`,
+      `autoWithdraw=${autoWithdraw ? 'on' : 'off'}`,
     ]);
     for (const account of context.configService.listAccounts()) {
       const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
@@ -727,15 +747,17 @@ async function runWatchAll(
       process.stdout.write(`  account=${account.name} mode=${account.mode} assets=${balances.length}\n`);
       await printBalancesWithUsdtValue(exchange, balances, '    ');
 
-      const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-      if (rules.length === 0) {
-        process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
-      }
-      for (const rule of rules) {
-        const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-        const riskControl = new RiskControl();
-        const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-        await monitor.tick(selectedAccount, rule, credentials);
+      if (autoWithdraw) {
+        const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+        if (rules.length === 0) {
+          process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
+        }
+        for (const rule of rules) {
+          const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+          const riskControl = new RiskControl();
+          const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+          await monitor.tick(selectedAccount, rule, credentials);
+        }
       }
     }
 
@@ -797,6 +819,8 @@ async function main(): Promise<void> {
 
   const accountCommand = program.command('account').description('Manage exchange account');
   const assetRule = program.command('asset-rule').description('Manage asset withdrawal rules');
+  const balanceCommand = program.command('balance').description('Balance operations');
+  const withdrawCommand = program.command('withdraw').description('Withdraw operations');
 
   async function promptExchangeCredentials(accountName: string): Promise<{ apiKey: string; apiSecret: string }> {
     process.stdout.write(`Enter exchange credentials for ${accountName}. Input is hidden.\n`);
@@ -869,8 +893,74 @@ async function main(): Promise<void> {
       `${resolvedAccount} is set to ${savedAccount.mode} mode on MEXC.`,
       `Check interval: ${savedAccount.checkIntervalMs} ms. Withdraw cooldown: ${savedAccount.withdrawCooldownMs} ms.`,
       wantsCredentialUpdate ? 'Stored API credentials were updated through the interactive prompt.' : 'Stored API credentials were left unchanged.',
-      `Next step: mexc-monitor account test -a ${resolvedAccount}`,
+      `Next step: mexc-monitor balance check-one -a ${resolvedAccount}`,
     ]);
+  }
+
+  async function runBalanceAllCheck(masterPassword?: string, showHealthText = false): Promise<void> {
+    const accounts = context.configService.listAccounts();
+    if (accounts.length === 0) {
+      printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
+      return;
+    }
+
+    let passed = 0;
+    let failed = 0;
+    process.stdout.write(`Checking ${pluralize(accounts.length, 'account')} concurrently.\n`);
+    const resolvedPassword = await resolveMasterPassword(masterPassword, 'CLI master password: ');
+    context.credentialService.unlock(accounts[0].name, resolvedPassword);
+    if (showHealthText) {
+      process.stdout.write('CLI master password verified. Starting account health checks now.\n');
+    }
+
+    const pending = new Map(accounts.map((account) => {
+      const promise = fetchAccountHealthCheck(context, account.name, resolvedPassword)
+        .then((result) => ({ ok: true as const, account, result }))
+        .catch((error) => ({
+          ok: false as const,
+          account,
+          error: truncateValue(error instanceof Error ? error.message : String(error), 160),
+        }));
+      return [account.name, promise] as const;
+    }));
+
+    while (pending.size > 0) {
+      const settled = await Promise.race(
+        Array.from(pending.entries(), ([accountName, promise]) => promise.then((value) => ({ accountName, value }))),
+      );
+      pending.delete(settled.accountName);
+
+      if (settled.value.ok) {
+        passed += 1;
+        const result = settled.value.result;
+        process.stdout.write(`\n${result.account.name} (${result.account.exchangeId})\n`);
+        if (showHealthText) {
+          process.stdout.write(`  Health check passed. Mode: ${result.account.mode}.\n`);
+        } else {
+          process.stdout.write(`  Mode: ${result.account.mode}\n`);
+        }
+        if (result.balances.length === 0) {
+          process.stdout.write('  No free balance returned by the exchange.\n');
+        } else {
+          await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
+        }
+        continue;
+      }
+
+      failed += 1;
+      process.stdout.write(`\n${settled.value.account.name} (${settled.value.account.exchangeId})\n`);
+      process.stdout.write(`  Health check failed: ${settled.value.error}\n`);
+    }
+
+    if (showHealthText) {
+      process.stdout.write(`\nFinished. Healthy: ${passed}. Failed: ${failed}.\n`);
+    } else {
+      process.stdout.write(`\nFinished. Accounts: ${accounts.length}. Failed: ${failed}.\n`);
+    }
+
+    if (failed > 0) {
+      process.exitCode = 1;
+    }
   }
 
   addMasterPasswordOption(accountCommand
@@ -884,71 +974,16 @@ async function main(): Promise<void> {
     .action(saveAccountFromPrompt);
 
   addMasterPasswordOption(accountCommand.command('test')
-    .description('Unlock credentials and perform an exchange API health check')
+    .description('Reference alias for balance check-one')
     .requiredOption('-a, --account <account>'))
     .action(async ({ account, masterPassword, password }: { account: string; masterPassword?: string; password?: string }) => {
       await runAccountHealthCheck(context, account, resolveMasterPasswordOption({ masterPassword, password }));
     });
 
   addMasterPasswordOption(accountCommand.command('test-all')
-    .description('Run an exchange API health check for every configured account and show balances')
+    .description('Reference alias for balance check-all')
   ).action(async ({ masterPassword, password }: { masterPassword?: string; password?: string }) => {
-      const accounts = context.configService.listAccounts();
-      if (accounts.length === 0) {
-        printEmptyState("No accounts configured yet. Create one with: mexc-monitor account add -a main");
-        return;
-      }
-
-      let passed = 0;
-      let failed = 0;
-      process.stdout.write(`Checking ${pluralize(accounts.length, 'account')} concurrently.\n`);
-      const resolvedPassword = await resolveMasterPassword(
-        resolveMasterPasswordOption({ masterPassword, password }),
-        'CLI master password: ',
-      );
-      context.credentialService.unlock(accounts[0].name, resolvedPassword);
-      process.stdout.write('CLI master password verified. Starting account health checks now.\n');
-
-      const pending = new Map(accounts.map((account) => {
-        const promise = fetchAccountHealthCheck(context, account.name, resolvedPassword)
-          .then((result) => ({ ok: true as const, account, result }))
-          .catch((error) => ({
-            ok: false as const,
-            account,
-            error: truncateValue(error instanceof Error ? error.message : String(error), 160),
-          }));
-        return [account.name, promise] as const;
-      }));
-
-      while (pending.size > 0) {
-        const settled = await Promise.race(
-          Array.from(pending.entries(), ([accountName, promise]) => promise.then((value) => ({ accountName, value }))),
-        );
-        pending.delete(settled.accountName);
-
-        if (settled.value.ok) {
-          passed += 1;
-          const result = settled.value.result;
-          process.stdout.write(`\n${result.account.name} (${result.account.exchangeId})\n`);
-          process.stdout.write(`  Health check passed. Mode: ${result.account.mode}.\n`);
-          if (result.balances.length === 0) {
-            process.stdout.write('  No free balance returned by the exchange.\n');
-          } else {
-            await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
-          }
-          continue;
-        }
-
-        failed += 1;
-        process.stdout.write(`\n${settled.value.account.name} (${settled.value.account.exchangeId})\n`);
-        process.stdout.write(`  Health check failed: ${settled.value.error}\n`);
-      }
-
-      process.stdout.write(`\nFinished. Healthy: ${passed}. Failed: ${failed}.\n`);
-
-      if (failed > 0) {
-        process.exitCode = 1;
-      }
+      await runBalanceAllCheck(resolveMasterPasswordOption({ masterPassword, password }), true);
     });
 
   accountCommand.command('list').description('List configured accounts').action(() => {
@@ -992,18 +1027,18 @@ async function main(): Promise<void> {
 
   assetRule
     .command('add')
-    .description('Add a withdrawal rule that keeps balance under maxBalance')
-    .requiredOption('-a, --account <account>')
-    .requiredOption('--asset <asset>')
-    .requiredOption('--network <network>')
-    .requiredOption('--withdraw-address <withdrawAddress>')
-    .option('--max-balance <maxBalance>')
-    .option('--target-balance <targetBalance>', '', '0')
-    .option('--max-balance-usdt <maxBalanceUsdt>')
-    .option('--target-balance-usdt <targetBalanceUsdt>')
-    .option('--min-withdraw-amount <minWithdrawAmount>', '', '0')
-    .option('--max-withdraw-amount <maxWithdrawAmount>', '', '999999999')
-    .option('--withdraw-tag <withdrawTag>')
+    .description('Create a new rule for when and where an asset should be withdrawn')
+    .requiredOption('-a, --account <account>', 'Account name this rule belongs to')
+    .requiredOption('--asset <asset>', 'Asset symbol to monitor and withdraw, for example BTC or USDT')
+    .requiredOption('--network <network>', 'Withdrawal network to use on the exchange, for example ERC20 or BTC')
+    .requiredOption('--withdraw-address <withdrawAddress>', 'Destination address for the withdrawal')
+    .option('--max-balance <maxBalance>', 'Trigger when on-exchange asset balance rises above this amount')
+    .option('--target-balance <targetBalance>', 'After a quantity-based trigger, withdraw back down to this remaining balance', '0')
+    .option('--max-balance-usdt <maxBalanceUsdt>', 'Trigger when the estimated USDT value rises above this amount')
+    .option('--target-balance-usdt <targetBalanceUsdt>', 'After a USDT-value trigger, withdraw back down to this estimated remaining value')
+    .option('--min-withdraw-amount <minWithdrawAmount>', 'Reject withdraws smaller than this amount', '0')
+    .option('--max-withdraw-amount <maxWithdrawAmount>', 'Reject withdraws larger than this amount', '999999999')
+    .option('--withdraw-tag <withdrawTag>', 'Optional memo, tag, or payment ID required by some networks and destinations')
     .action((options: {
       account: string; asset: string; network: string; withdrawAddress: string; maxBalance?: string; targetBalance: string;
       maxBalanceUsdt?: string; targetBalanceUsdt?: string; minWithdrawAmount: string; maxWithdrawAmount: string; withdrawTag?: string;
@@ -1030,14 +1065,14 @@ async function main(): Promise<void> {
           `Target balance: ${rule.targetBalance}. Max balance: ${rule.maxBalance}.`,
           `USDT thresholds: target ${rule.targetBalanceUsdt ?? '-'}, max ${rule.maxBalanceUsdt ?? '-'}.`,
           `Rule is enabled and ready to evaluate.`,
-          `Next step: mexc-monitor withdraw -a ${rule.accountName}`,
+          `Next step: mexc-monitor withdraw check-one -a ${rule.accountName}`,
         ]);
       });
     });
 
   assetRule
     .command('update')
-    .description('Update fields on an existing asset withdrawal rule')
+    .description('Change thresholds, destination, or limits on an existing rule')
     .requiredOption('-a, --account <account>')
     .requiredOption('--asset <asset>')
     .option('--network <network>')
@@ -1077,7 +1112,7 @@ async function main(): Promise<void> {
 
   assetRule
     .command('enable')
-    .description('Enable an asset withdrawal rule')
+    .description('Turn a rule on so withdraw checks can use it')
     .requiredOption('-a, --account <account>')
     .requiredOption('--asset <asset>')
     .action(({ account, asset }: { account: string; asset: string }) => {
@@ -1091,7 +1126,7 @@ async function main(): Promise<void> {
 
   assetRule
     .command('disable')
-    .description('Disable an asset withdrawal rule')
+    .description('Turn a rule off without deleting its configuration')
     .requiredOption('-a, --account <account>')
     .requiredOption('--asset <asset>')
     .action(({ account, asset }: { account: string; asset: string }) => {
@@ -1104,7 +1139,7 @@ async function main(): Promise<void> {
     });
 
   assetRule.command('list')
-    .description('List asset withdrawal rules for an account')
+    .description('Show every rule configured for an account')
     .requiredOption('-a, --account <account>')
     .action(({ account }: { account: string }) => {
       const rules = context.configService.listAssetRules(account);
@@ -1122,7 +1157,7 @@ async function main(): Promise<void> {
     });
 
   assetRule.command('show')
-    .description('Show one asset withdrawal rule')
+    .description('Show the full configuration for one rule')
     .requiredOption('-a, --account <account>')
     .option('--asset <asset>')
     .action(({ account, asset }: { account: string; asset?: string }) => {
@@ -1131,7 +1166,7 @@ async function main(): Promise<void> {
 
   assetRule
     .command('remove')
-    .description('Remove an asset withdrawal rule')
+    .description('Delete a rule completely')
     .requiredOption('-a, --account <account>')
     .requiredOption('--asset <asset>')
     .action(({ account, asset }: { account: string; asset: string }) => {
@@ -1139,8 +1174,62 @@ async function main(): Promise<void> {
       process.stdout.write(`Removed withdrawal rule ${account}/${asset}.\n`);
     });
 
-  addMasterPasswordOption(program
-    .command('withdraw')
+  addMasterPasswordOption(balanceCommand
+    .command('check-one')
+    .description('Run one balance and API health check for an account')
+    .requiredOption('-a, --account <account>'))
+    .action(async ({ account, masterPassword, password }: { account: string; masterPassword?: string; password?: string }) => {
+      await runBalanceCheck(context, account, resolveMasterPasswordOption({ masterPassword, password }));
+    });
+
+  addMasterPasswordOption(balanceCommand
+    .command('check-one-loop')
+    .description('Continuously print balances for one account')
+    .requiredOption('-a, --account <account>')
+    .option('--interval-ms <intervalMs>', '', '30000'))
+    .action(async ({ account, masterPassword, password, intervalMs }: {
+      account: string; masterPassword?: string; password?: string; intervalMs: string;
+    }) => {
+      const selectedAccount = buildAccountConfig({
+        ...resolveAccount(context, account),
+        checkIntervalMs: parsePositiveIntegerOption('interval-ms', intervalMs),
+      });
+      const resolvedPassword = await resolveMasterPassword(
+        resolveMasterPasswordOption({ masterPassword, password }),
+        'CLI master password for ' + account + ': ',
+      );
+      const credentials = context.credentialService.unlock(account, resolvedPassword);
+      await runWatchLoop(context, credentials, selectedAccount, context.configService.listAssetRules(account), false);
+    });
+
+  addMasterPasswordOption(balanceCommand
+    .command('check-all')
+    .description('Run one balance and API health check for every configured account'))
+    .action(async ({ masterPassword, password }: { masterPassword?: string; password?: string }) => {
+      await runBalanceAllCheck(resolveMasterPasswordOption({ masterPassword, password }), false);
+    });
+
+  addMasterPasswordOption(balanceCommand
+    .command('check-all-loop')
+    .description('Continuously print balances for all configured accounts')
+    .option('--interval-ms <intervalMs>'))
+    .action(async ({ masterPassword, password, intervalMs }: {
+      masterPassword?: string; password?: string; intervalMs?: string;
+    }) => {
+      const accounts = context.configService.listAccounts();
+      if (accounts.length === 0) {
+        throw new Error('No accounts configured.');
+      }
+      await runWatchAll(
+        context,
+        resolveMasterPasswordOption({ masterPassword, password }),
+        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
+        false,
+      );
+    });
+
+  addMasterPasswordOption(withdrawCommand
+    .command('check-one')
     .description('Run one withdraw check for all enabled rules on an account')
     .requiredOption('-a, --account <account>')
     .option('--confirm-live'))
@@ -1170,8 +1259,8 @@ async function main(): Promise<void> {
       ]);
     });
 
-  addMasterPasswordOption(program
-    .command('watch-withdraw')
+  addMasterPasswordOption(withdrawCommand
+    .command('check-one-loop')
     .description('Continuously monitor and withdraw for one account')
     .requiredOption('-a, --account <account>')
     .option('--interval-ms <intervalMs>', '', '30000')
@@ -1190,11 +1279,11 @@ async function main(): Promise<void> {
       );
       const credentials = context.credentialService.unlock(account, resolvedPassword);
       const rules = context.configService.listAssetRules(account).filter((item) => item.enabled);
-      await runWatchLoop(context, credentials, selectedAccount, rules);
+      await runWatchLoop(context, credentials, selectedAccount, rules, true);
     });
 
-  addMasterPasswordOption(program
-    .command('withdraw-all')
+  addMasterPasswordOption(withdrawCommand
+    .command('check-all')
     .description('Run one withdraw check for every configured account')
     .option('--confirm-live'))
     .action(async ({ masterPassword, password, confirmLive }: {
@@ -1233,8 +1322,8 @@ async function main(): Promise<void> {
       ]);
     });
 
-  addMasterPasswordOption(program
-    .command('watch-withdraw-all')
+  addMasterPasswordOption(withdrawCommand
+    .command('check-all-loop')
     .description('Continuously monitor and withdraw for every configured account')
     .option('--interval-ms <intervalMs>')
     .option('--confirm-live'))
@@ -1250,6 +1339,7 @@ async function main(): Promise<void> {
         context,
         resolveMasterPasswordOption({ masterPassword, password }),
         intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
+        true,
       );
     });
 
