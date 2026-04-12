@@ -116,4 +116,11 @@ export function runSchema(db: Database): void {
   ensureColumn(db, 'asset_rules', 'target_balance_usdt', 'target_balance_usdt TEXT');
   ensureColumn(db, 'asset_rules', 'max_balance_usdt', 'max_balance_usdt TEXT');
   ensureColumn(db, 'asset_rules', 'address_book_alias', 'address_book_alias TEXT');
+
+  db.exec(`
+    INSERT OR IGNORE INTO address_book (account_name, alias, asset, network, address, tag, note)
+    SELECT '__global__', alias, asset, network, address, tag, note
+    FROM address_book
+    WHERE account_name != '__global__'
+  `);
 }

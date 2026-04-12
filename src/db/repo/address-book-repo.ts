@@ -3,10 +3,13 @@ import type { Database } from 'bun:sqlite';
 import type { AddressBookEntry } from '../../core/types';
 
 export class AddressBookRepo {
+  private static readonly ANY_ASSET = '*';
+  private static readonly GLOBAL_SCOPE = '__global__';
+
   constructor(private readonly db: Database) {}
 
-  get(accountName: string, alias: string): AddressBookEntry | null {
-    const row = this.db.prepare('SELECT * FROM address_book WHERE account_name = ? AND alias = ?').get(accountName, alias) as Record<string, unknown> | null;
+  get(alias: string): AddressBookEntry | null {
+    const row = this.db.prepare('SELECT * FROM address_book WHERE account_name = ? AND alias = ?').get(AddressBookRepo.GLOBAL_SCOPE, alias) as Record<string, unknown> | null;
     if (!row) {
       return null;
     }
@@ -14,12 +17,8 @@ export class AddressBookRepo {
     return this.mapRow(row);
   }
 
-  list(accountName?: string): AddressBookEntry[] {
-    const rows = (
-      accountName
-        ? this.db.prepare('SELECT * FROM address_book WHERE account_name = ? ORDER BY alias ASC').all(accountName)
-        : this.db.prepare('SELECT * FROM address_book ORDER BY account_name ASC, alias ASC').all()
-    ) as Record<string, unknown>[];
+  list(): AddressBookEntry[] {
+    const rows = this.db.prepare('SELECT * FROM address_book WHERE account_name = ? ORDER BY alias ASC').all(AddressBookRepo.GLOBAL_SCOPE) as Record<string, unknown>[];
 
     return rows.map((row) => this.mapRow(row));
   }
@@ -38,9 +37,9 @@ export class AddressBookRepo {
         tag = excluded.tag,
         note = excluded.note
     `).run({
-      account_name: entry.accountName,
+      account_name: AddressBookRepo.GLOBAL_SCOPE,
       alias: entry.alias,
-      asset: entry.asset,
+      asset: entry.asset ?? AddressBookRepo.ANY_ASSET,
       network: entry.network,
       address: entry.address,
       tag: entry.tag ?? null,
@@ -48,31 +47,14 @@ export class AddressBookRepo {
     });
   }
 
-  remove(accountName: string, alias: string): void {
-    this.db.prepare('DELETE FROM address_book WHERE account_name = ? AND alias = ?').run(accountName, alias);
-  }
-
-  renameAccount(from: string, to: string): void {
-    if (from === to) {
-      return;
-    }
-
-    const entries = this.list(from);
-    for (const entry of entries) {
-      this.save({
-        ...entry,
-        accountName: to,
-      });
-    }
-
-    this.db.prepare('DELETE FROM address_book WHERE account_name = ?').run(from);
+  remove(alias: string): void {
+    this.db.prepare('DELETE FROM address_book WHERE account_name = ? AND alias = ?').run(AddressBookRepo.GLOBAL_SCOPE, alias);
   }
 
   private mapRow(row: Record<string, unknown>): AddressBookEntry {
     return {
-      accountName: String(row.account_name),
       alias: String(row.alias),
-      asset: String(row.asset),
+      asset: String(row.asset) === AddressBookRepo.ANY_ASSET ? undefined : String(row.asset),
       network: String(row.network),
       address: String(row.address),
       tag: row.tag ? String(row.tag) : undefined,

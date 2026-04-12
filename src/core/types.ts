@@ -29,9 +29,8 @@ export interface AssetRule {
 }
 
 export interface AddressBookEntry {
-  accountName: string;
   alias: string;
-  asset: string;
+  asset?: string;
   network: string;
   address: string;
   tag?: string;

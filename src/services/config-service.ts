@@ -58,9 +58,8 @@ const assetRuleSchema = z.object({
 });
 
 const addressBookEntrySchema = z.object({
-  accountName: z.string().min(1),
   alias: z.string().min(1),
-  asset: z.string().min(1),
+  asset: z.string().min(1).optional(),
   network: z.string().min(1),
   address: z.string().min(1),
   tag: z.string().optional(),
@@ -131,7 +130,6 @@ export class ConfigService {
   renameAccount(from: string, to: string): void {
     this.accountRepo.rename(from, to);
     this.assetRuleRepo.renameAccount(from, to);
-    this.addressBookRepo.renameAccount(from, to);
   }
 
   listAssetRules(accountName?: string): AssetRule[] {
@@ -147,12 +145,12 @@ export class ConfigService {
     this.assetRuleRepo.remove(accountName, asset);
   }
 
-  getAddressBookEntry(accountName: string, alias: string): AddressBookEntry | null {
-    return this.addressBookRepo.get(accountName, alias);
+  getAddressBookEntry(alias: string): AddressBookEntry | null {
+    return this.addressBookRepo.get(alias);
   }
 
-  listAddressBookEntries(accountName?: string): AddressBookEntry[] {
-    return this.addressBookRepo.list(accountName);
+  listAddressBookEntries(): AddressBookEntry[] {
+    return this.addressBookRepo.list();
   }
 
   saveAddressBookEntry(entry: AddressBookEntry): void {
@@ -160,7 +158,7 @@ export class ConfigService {
     this.addressBookRepo.save(entry);
   }
 
-  removeAddressBookEntry(accountName: string, alias: string): void {
-    this.addressBookRepo.remove(accountName, alias);
+  removeAddressBookEntry(alias: string): void {
+    this.addressBookRepo.remove(alias);
   }
 }

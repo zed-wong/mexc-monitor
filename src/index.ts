@@ -14,8 +14,8 @@ import * as readline from 'node:readline';
 const EXAMPLES = `
 Examples:
   mexc-monitor account add -a main
-  mexc-monitor address-book add -a main --alias treasury --asset USDT --network ERC20 --address 0xabc...
-  mexc-monitor asset-rule add -a main --address-book treasury --max-balance 1000 --target-balance 200
+  mexc-monitor address-book add --alias treasury --network ERC20 --address 0xabc...
+  mexc-monitor asset-rule add -a main --asset USDT --address-book treasury --max-balance 1000 --target-balance 200
   mexc-monitor asset-rule add -a main --asset USDT --network ERC20 --withdraw-address 0xabc... --max-balance 1000 --target-balance 200
   mexc-monitor auth set-master-password
   mexc-monitor balance check-one -a main --master-password '***'
@@ -193,16 +193,14 @@ function printWithdrawPlan(
 }
 
 function buildAddressBookEntry(options: {
-  accountName: string;
   alias: string;
-  asset: string;
+  asset?: string;
   network: string;
   address: string;
   tag?: string;
   note?: string;
 }): AddressBookEntry {
   return {
-    accountName: options.accountName,
     alias: options.alias,
     asset: options.asset,
     network: options.network,
@@ -288,13 +286,13 @@ function getRecommendedNextSteps(
     const rules = context.configService.listAssetRules(account.name);
     const enabledRules = rules.filter((item) => item.enabled);
     const runtimeRows = context.runtimeService.listRuntime({ accountName: account.name });
-    const addressBookEntries = context.configService.listAddressBookEntries(account.name);
+    const addressBookEntries = context.configService.listAddressBookEntries();
 
     if (rules.length === 0) {
       if (addressBookEntries.length === 0) {
-        steps.push(`Add an address book entry for ${account.name}: mexc-monitor address-book add -a ${account.name} --alias treasury --asset USDT --network ERC20 --address 0xabc...`);
+        steps.push('Add a shared address book entry: mexc-monitor address-book add --alias treasury --network ERC20 --address 0xabc...');
       }
-      steps.push(`Add a withdrawal rule for ${account.name}: mexc-monitor asset-rule add -a ${account.name} --address-book treasury --max-balance 1000 --target-balance 200`);
+      steps.push(`Add a withdrawal rule for ${account.name}: mexc-monitor asset-rule add -a ${account.name} --asset USDT --address-book treasury --max-balance 1000 --target-balance 200`);
       continue;
     }
 
@@ -689,12 +687,11 @@ async function validateAssetRuleForExchange(rule: AssetRule): Promise<void> {
 
 function resolveAddressBookEntry(
   context: ReturnType<typeof createAppContext>,
-  accountName: string,
   alias: string,
 ): AddressBookEntry {
-  const entry = context.configService.getAddressBookEntry(accountName, alias);
+  const entry = context.configService.getAddressBookEntry(alias);
   if (!entry) {
-    throw new Error(`Address book entry not found: ${accountName}/${alias}`);
+    throw new Error(`Address book entry not found: ${alias}`);
   }
   return entry;
 }
@@ -711,13 +708,17 @@ function buildRuleDestination(
   },
 ): Pick<AssetRule, 'asset' | 'network' | 'withdrawAddress' | 'withdrawTag' | 'addressBookAlias'> {
   if (options.addressBook) {
-    const entry = resolveAddressBookEntry(context, options.accountName, options.addressBook);
-    if (options.asset && options.asset !== entry.asset) {
+    const entry = resolveAddressBookEntry(context, options.addressBook);
+    if (options.asset && entry.asset && options.asset !== entry.asset) {
       throw new Error(`Address book entry ${options.addressBook} is for ${entry.asset}, not ${options.asset}.`);
+    }
+    const resolvedAsset = options.asset ?? entry.asset;
+    if (!resolvedAsset) {
+      throw new Error(`Address book entry ${options.addressBook} can be reused across assets. Re-run with --asset <asset>.`);
     }
 
     return {
-      asset: entry.asset,
+      asset: resolvedAsset,
       network: options.network ?? entry.network,
       withdrawAddress: options.withdrawAddress ?? entry.address,
       withdrawTag: options.withdrawTag ?? entry.tag,
@@ -1200,19 +1201,16 @@ async function main(): Promise<void> {
   addressBookCommand
     .command('add')
     .description('Save a withdrawal destination under a reusable alias')
-    .requiredOption('-a, --account <account>', 'Account name this address book entry belongs to')
     .requiredOption('--alias <alias>', 'Short alias used when creating withdrawal rules')
-    .requiredOption('--asset <asset>', 'Asset symbol this destination is intended for')
+    .option('--asset <asset>', 'Optional asset restriction; omit it to reuse this destination across many assets on the same network')
     .requiredOption('--network <network>', 'Withdrawal network to use on the exchange')
     .requiredOption('--address <address>', 'Destination address')
     .option('--tag <tag>', 'Optional memo, tag, or payment ID')
     .option('--note <note>', 'Free-form note to describe this destination')
     .action((options: {
-      account: string; alias: string; asset: string; network: string; address: string; tag?: string; note?: string;
+      alias: string; asset?: string; network: string; address: string; tag?: string; note?: string;
     }) => {
-      const account = resolveAccount(context, options.account);
       const entry = buildAddressBookEntry({
-        accountName: account.name,
         alias: options.alias,
         asset: options.asset,
         network: options.network,
@@ -1221,16 +1219,16 @@ async function main(): Promise<void> {
         note: options.note,
       });
 
-      return createExchangeAdapter(account.exchangeId).validateConfig({
-        asset: entry.asset,
+      return createExchangeAdapter('mexc').validateConfig({
+        asset: entry.asset ?? 'USDT',
         network: entry.network,
         address: entry.address,
       }).then(() => {
         context.configService.saveAddressBookEntry(entry);
         printSection('Address book entry saved', [
-          `${entry.alias} is ready for ${entry.accountName}.`,
-          `Destination: ${entry.asset} on ${entry.network}.`,
-          `Next step: mexc-monitor asset-rule add -a ${entry.accountName} --address-book ${entry.alias} --max-balance 1000 --target-balance 200`,
+          `${entry.alias} is ready for all accounts.`,
+          `Destination: ${entry.asset ?? 'any asset'} on ${entry.network}.`,
+          `Next step: mexc-monitor asset-rule add -a main --asset USDT --address-book ${entry.alias} --max-balance 1000 --target-balance 200`,
         ]);
       });
     });
@@ -1238,74 +1236,70 @@ async function main(): Promise<void> {
   addressBookCommand
     .command('update')
     .description('Update a saved withdrawal destination')
-    .requiredOption('-a, --account <account>')
     .requiredOption('--alias <alias>')
     .option('--asset <asset>')
     .option('--network <network>')
     .option('--address <address>')
     .option('--tag <tag>')
     .option('--note <note>')
+    .option('--clear-asset', 'Remove the asset restriction so this alias can be reused across assets')
     .action((options: {
-      account: string; alias: string; asset?: string; network?: string; address?: string; tag?: string; note?: string;
+      alias: string; asset?: string; network?: string; address?: string; tag?: string; note?: string; clearAsset?: boolean;
     }) => {
-      const existing = resolveAddressBookEntry(context, options.account, options.alias);
+      const existing = resolveAddressBookEntry(context, options.alias);
       const entry = buildAddressBookEntry({
-        accountName: existing.accountName,
         alias: existing.alias,
-        asset: options.asset ?? existing.asset,
+        asset: options.clearAsset ? undefined : (options.asset ?? existing.asset),
         network: options.network ?? existing.network,
         address: options.address ?? existing.address,
         tag: options.tag ?? existing.tag,
         note: options.note ?? existing.note,
       });
 
-      return createExchangeAdapter(resolveAccount(context, existing.accountName).exchangeId).validateConfig({
-        asset: entry.asset,
+      return createExchangeAdapter('mexc').validateConfig({
+        asset: entry.asset ?? 'USDT',
         network: entry.network,
         address: entry.address,
       }).then(() => {
         context.configService.saveAddressBookEntry(entry);
-        process.stdout.write(`Updated address book entry ${entry.accountName}/${entry.alias}.\n`);
+        process.stdout.write(`Updated address book entry ${entry.alias}.\n`);
       });
     });
 
   addressBookCommand
     .command('list')
     .description('List saved withdrawal destinations')
-    .requiredOption('-a, --account <account>')
-    .action(({ account }: { account: string }) => {
-      const entries = context.configService.listAddressBookEntries(account);
+    .action(() => {
+      const entries = context.configService.listAddressBookEntries();
       if (entries.length === 0) {
-        printEmptyState(`No address book entries configured for ${account}. Add one with: mexc-monitor address-book add -a ${account} --alias treasury --asset USDT --network ERC20 --address 0xabc...`);
+        printEmptyState('No address book entries configured. Add one with: mexc-monitor address-book add --alias treasury --network ERC20 --address 0xabc...');
         return;
       }
 
       printSection('Address book', [
-        `${account} has ${pluralize(entries.length, 'saved destination')}.`,
+        `Configured ${pluralize(entries.length, 'shared destination')}.`,
       ]);
       for (const entry of entries) {
-        process.stdout.write(`  ${entry.alias}: ${entry.asset} on ${entry.network} -> ${entry.address}${entry.note ? ` (${entry.note})` : ''}\n`);
+        process.stdout.write(`  ${entry.alias}: ${entry.asset ?? 'any asset'} on ${entry.network} -> ${entry.address}${entry.note ? ` (${entry.note})` : ''}\n`);
       }
     });
 
   addressBookCommand
     .command('show')
     .description('Show one saved withdrawal destination')
-    .requiredOption('-a, --account <account>')
     .requiredOption('--alias <alias>')
-    .action(({ account, alias }: { account: string; alias: string }) => {
-      printKeyValue('Address Book Entry', resolveAddressBookEntry(context, account, alias) as unknown as Record<string, unknown>);
+    .action(({ alias }: { alias: string }) => {
+      printKeyValue('Address Book Entry', resolveAddressBookEntry(context, alias) as unknown as Record<string, unknown>);
     });
 
   addressBookCommand
     .command('remove')
     .description('Delete a saved withdrawal destination')
-    .requiredOption('-a, --account <account>')
     .requiredOption('--alias <alias>')
-    .action(({ account, alias }: { account: string; alias: string }) => {
-      resolveAddressBookEntry(context, account, alias);
-      context.configService.removeAddressBookEntry(account, alias);
-      process.stdout.write(`Removed address book entry ${account}/${alias}.\n`);
+    .action(({ alias }: { alias: string }) => {
+      resolveAddressBookEntry(context, alias);
+      context.configService.removeAddressBookEntry(alias);
+      process.stdout.write(`Removed address book entry ${alias}.\n`);
     });
 
   assetRule
@@ -1456,7 +1450,7 @@ async function main(): Promise<void> {
     .action(({ account }: { account: string }) => {
       const rules = context.configService.listAssetRules(account);
       if (rules.length === 0) {
-        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --address-book treasury --max-balance 1000 --target-balance 200`);
+        printEmptyState(`No asset rules configured for ${account}. Add one with: mexc-monitor asset-rule add -a ${account} --asset USDT --address-book treasury --max-balance 1000 --target-balance 200`);
         return;
       }
 
@@ -1559,7 +1553,7 @@ async function main(): Promise<void> {
       if (rules.length === 0) {
         printSection('Withdraw check skipped', [
           `${account} has no enabled withdrawal rules to evaluate.`,
-          `Next step: mexc-monitor asset-rule add -a ${account} --address-book treasury --max-balance 1000 --target-balance 200`,
+          `Next step: mexc-monitor asset-rule add -a ${account} --asset USDT --address-book treasury --max-balance 1000 --target-balance 200`,
         ]);
         return;
       }

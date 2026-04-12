@@ -75,31 +75,27 @@ describe('ConfigService', () => {
     })).toThrow('targetBalanceUsdt and maxBalanceUsdt must both be set and targetBalanceUsdt must be <= maxBalanceUsdt');
   });
 
-  test('persists address book entries and renames them with the account', () => {
+  test('persists global address book entries independently from accounts', () => {
     const service = createConfigService();
     service.saveAccount(account, secrets);
     service.saveAddressBookEntry({
-      accountName: 'main',
       alias: 'treasury',
-      asset: 'USDT',
       network: 'ERC20',
       address: '0xabc',
       tag: 'memo-1',
       note: 'primary vault',
     });
 
-    expect(service.getAddressBookEntry('main', 'treasury')).toMatchObject({
+    expect(service.getAddressBookEntry('treasury')).toMatchObject({
       alias: 'treasury',
-      asset: 'USDT',
+      asset: undefined,
       network: 'ERC20',
       address: '0xabc',
     });
 
     service.renameAccount('main', 'ops');
 
-    expect(service.getAddressBookEntry('main', 'treasury')).toBeNull();
-    expect(service.getAddressBookEntry('ops', 'treasury')).toMatchObject({
-      accountName: 'ops',
+    expect(service.getAddressBookEntry('treasury')).toMatchObject({
       alias: 'treasury',
     });
   });
