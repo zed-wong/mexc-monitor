@@ -13,11 +13,13 @@ class TestCcxtAdapter extends BaseCcxtAdapter {
     this.exchange = exchangeInstance;
   }
 
-  protected createExchange(_credentials: Credentials): Exchange {
+  protected createExchange(credentials: Credentials): Exchange {
+    void credentials;
     return this.exchangeInstance;
   }
 
-  async withdraw(_input: WithdrawInput): Promise<WithdrawResult> {
+  async withdraw(input: WithdrawInput): Promise<WithdrawResult> {
+    void input;
     return { raw: null };
   }
 
@@ -57,5 +59,52 @@ describe('BaseCcxtAdapter', () => {
 
     const adapter = new TestCcxtAdapter(exchange);
     await expect(adapter.fetchQuotePrice('BTC', 'USDT')).resolves.toBe('63000.12345678');
+  });
+
+  test('normalizes my trades into stable string fields', async () => {
+    const exchange = {
+      fetchMyTrades: async () => ([
+        {
+          id: 'trade-1',
+          order: 'order-1',
+          clientOrderId: 'client-1',
+          symbol: 'BTC/USDT',
+          side: 'buy',
+          type: 'limit',
+          takerOrMaker: 'taker',
+          timestamp: 1712345678901,
+          datetime: '2024-04-05T06:54:38.901Z',
+          price: '63000.12345678',
+          amount: '0.0002',
+          cost: '12.600024691356',
+          fee: {
+            cost: '0.0126',
+            currency: 'USDT',
+          },
+          info: { foo: 'bar' },
+        },
+      ]),
+    } as unknown as Exchange;
+
+    const adapter = new TestCcxtAdapter(exchange);
+    await expect(adapter.fetchMyTrades({ symbol: 'BTC/USDT', since: 1712340000000, until: 1712350000000, limit: 200 })).resolves.toEqual([
+      {
+        id: 'trade-1',
+        orderId: 'order-1',
+        clientOrderId: 'client-1',
+        symbol: 'BTC/USDT',
+        side: 'buy',
+        type: 'limit',
+        takerOrMaker: 'taker',
+        timestamp: 1712345678901,
+        datetime: '2024-04-05T06:54:38.901Z',
+        price: '63000.12345678',
+        amount: '0.0002',
+        cost: '12.600024691356',
+        feeCost: '0.0126',
+        feeCurrency: 'USDT',
+        info: { foo: 'bar' },
+      },
+    ]);
   });
 });

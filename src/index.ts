@@ -98,29 +98,6 @@ function formatFilterValue(value?: string): string {
   return value ?? 'all';
 }
 
-function printRuntimeCard(accountName: string, asset: string, runtime: {
-  apiStatus: string;
-  paused: boolean;
-  withdrawInProgress: boolean;
-  lastBalance?: string;
-  cooldownUntil?: string;
-  lastError?: string;
-  lastCheckAt?: string;
-  lastSuccessCheckAt?: string;
-}): void {
-  printDivider();
-  printSection(`${accountName}/${asset}`, [
-    `API status: ${formatValue(runtime.apiStatus)}`,
-    `Last balance seen: ${formatValue(runtime.lastBalance)}`,
-    `Paused: ${runtime.paused ? 'yes' : 'no'}`,
-    `Withdraw in progress: ${runtime.withdrawInProgress ? 'yes' : 'no'}`,
-    `Cooldown until: ${formatValue(runtime.cooldownUntil)}`,
-    `Last check: ${formatValue(runtime.lastCheckAt)}`,
-    `Last successful check: ${formatValue(runtime.lastSuccessCheckAt)}`,
-    `Last error: ${truncateValue(runtime.lastError, 120)}`,
-  ]);
-}
-
 function printLogEntry(item: {
   level: string;
   createdAt: string;
@@ -796,6 +773,95 @@ async function runBalanceCheck(
   await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
 }
 
+function printMyTradeEntry(item: {
+  id?: string;
+  orderId?: string;
+  symbol?: string;
+  side?: string;
+  type?: string;
+  takerOrMaker?: string;
+  datetime?: string;
+  timestamp: number;
+  price?: string;
+  amount?: string;
+  cost?: string;
+  feeCost?: string;
+  feeCurrency?: string;
+}): void {
+  printDivider();
+  printSection(`${(item.side ?? 'unknown').toUpperCase()} ${item.symbol ?? '-'} at ${item.datetime ?? new Date(item.timestamp).toISOString()}`, [
+    `Trade id: ${item.id ?? '-'}`,
+    `Order id: ${item.orderId ?? '-'}`,
+    `Type: ${item.type ?? '-'}`,
+    `Liquidity: ${item.takerOrMaker ?? '-'}`,
+    `Price: ${item.price ?? '-'}`,
+    `Amount: ${item.amount ?? '-'}`,
+    `Cost: ${item.cost ?? '-'}`,
+    `Fee: ${item.feeCost && item.feeCurrency ? `${item.feeCost} ${item.feeCurrency}` : '-'}`,
+  ]);
+}
+
+async function runMyTrades(
+  context: ReturnType<typeof createAppContext>,
+  options: {
+    accountName: string;
+    symbol: string;
+    hours: number;
+    limit: number;
+    password?: string;
+    json?: boolean;
+  },
+): Promise<void> {
+  const account = resolveAccount(context, options.accountName);
+  const resolvedPassword = await resolveMasterPassword(options.password, 'CLI master password: ');
+  const credentials = context.credentialService.unlock(options.accountName, resolvedPassword);
+  const exchange = createExchangeAdapter(account.exchangeId);
+  await exchange.init(credentials);
+
+  const normalizedSymbol = options.symbol.toUpperCase();
+  const until = Date.now();
+  const since = until - options.hours * 60 * 60 * 1000;
+  const trades = await exchange.fetchMyTrades({
+    symbol: normalizedSymbol,
+    since,
+    until,
+    limit: options.limit,
+  });
+
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({
+      account: account.name,
+      exchange: account.exchangeId,
+      symbol: normalizedSymbol,
+      hours: options.hours,
+      since,
+      sinceIso: new Date(since).toISOString(),
+      until,
+      untilIso: new Date(until).toISOString(),
+      tradeCount: trades.length,
+      trades,
+    }, null, 2)}\n`);
+    return;
+  }
+
+  if (trades.length === 0) {
+    printEmptyState(`No trades found for ${account.name} / ${normalizedSymbol} in the last ${options.hours}h.`);
+    return;
+  }
+
+  printSection('My trades', [
+    `Account filter: ${account.name}.`,
+    `Exchange: ${account.exchangeId}.`,
+    `Symbol filter: ${normalizedSymbol}.`,
+    `Lookback: ${options.hours}h (${new Date(since).toISOString()} -> ${new Date(until).toISOString()}).`,
+    `Showing ${pluralize(trades.length, 'trade')}.`,
+  ]);
+  for (const trade of trades) {
+    printMyTradeEntry(trade);
+  }
+  printDivider();
+}
+
 function resolveAccount(context: ReturnType<typeof createAppContext>, accountName: string): AccountConfig {
   const account = context.configService.getAccount(accountName);
   if (!account) {
@@ -992,6 +1058,7 @@ async function main(): Promise<void> {
   const assetRule = program.command('asset-rule').description('Manage asset withdrawal rules');
   const balanceCommand = program.command('balance').description('Balance operations');
   const withdrawCommand = program.command('withdraw').description('Withdraw operations');
+  const tradesCommand = program.command('trades').description('Trade history operations');
 
   async function promptExchangeCredentials(accountName: string): Promise<{ apiKey: string; apiSecret: string }> {
     process.stdout.write(`Enter exchange credentials for ${accountName}. Input is hidden.\n`);
@@ -1719,6 +1786,33 @@ async function main(): Promise<void> {
         printHistoryEntry(item);
       }
       printDivider();
+    });
+
+  addMasterPasswordOption(tradesCommand
+    .command('mine')
+    .description('Show your recent filled trades for one symbol')
+    .requiredOption('-a, --account <account>')
+    .requiredOption('-s, --symbol <symbol>')
+    .option('-H, --hours <hours>', 'Look back this many hours', '24')
+    .option('--page-size <limit>', 'Per-request page size when pulling history from the exchange', '1000')
+    .option('--json', 'Print structured JSON including raw exchange info for each trade', false))
+    .action(async ({ account, symbol, hours, pageSize, json, masterPassword, password }: {
+      account: string;
+      symbol: string;
+      hours: string;
+      pageSize: string;
+      json: boolean;
+      masterPassword?: string;
+      password?: string;
+    }) => {
+      await runMyTrades(context, {
+        accountName: account,
+        symbol,
+        hours: parsePositiveIntegerOption('hours', hours),
+        limit: parsePositiveIntegerOption('page-size', pageSize),
+        password: resolveMasterPasswordOption({ masterPassword, password }),
+        json,
+      });
     });
 
   const authCommand = program.command('auth').description('Manage global CLI master password');

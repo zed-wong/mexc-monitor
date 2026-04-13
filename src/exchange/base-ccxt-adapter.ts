@@ -1,14 +1,39 @@
-import type { Exchange } from 'ccxt';
+import type { Exchange, Trade } from 'ccxt';
 
 import type { Credentials } from '../core/types';
 import { decimal } from '../utils/decimal';
-import type { ExchangeAdapter } from './types';
+import type { ExchangeAdapter, MyTrade } from './types';
 
 export abstract class BaseCcxtAdapter implements ExchangeAdapter {
   abstract readonly id: string;
   protected exchange?: Exchange;
 
   protected abstract createExchange(credentials: Credentials): Exchange;
+
+  protected normalizeTrade(trade: Trade): MyTrade {
+    const tradeRecord = trade as unknown as Record<string, unknown>;
+    const clientOrderId = 'clientOrderId' in tradeRecord
+      ? tradeRecord.clientOrderId
+      : undefined;
+
+    return {
+      id: trade.id ? String(trade.id) : undefined,
+      orderId: trade.order ? String(trade.order) : undefined,
+      clientOrderId: clientOrderId ? String(clientOrderId) : undefined,
+      symbol: trade.symbol,
+      side: trade.side,
+      type: trade.type,
+      takerOrMaker: trade.takerOrMaker,
+      timestamp: trade.timestamp ?? 0,
+      datetime: trade.datetime,
+      price: trade.price !== undefined ? decimal(String(trade.price)).toFixed() : undefined,
+      amount: trade.amount !== undefined ? decimal(String(trade.amount)).toFixed() : undefined,
+      cost: trade.cost !== undefined ? decimal(String(trade.cost)).toFixed() : undefined,
+      feeCost: trade.fee?.cost !== undefined ? decimal(String(trade.fee.cost)).toFixed() : undefined,
+      feeCurrency: trade.fee?.currency,
+      info: trade.info,
+    };
+  }
 
   async init(credentials: Credentials): Promise<void> {
     this.exchange = this.createExchange(credentials);
@@ -54,6 +79,21 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
         : undefined;
 
     return price !== undefined ? decimal(String(price)).toFixed() : null;
+  }
+
+  async fetchMyTrades(input: { symbol: string; since?: number; until?: number; limit?: number }): Promise<MyTrade[]> {
+    if (!this.exchange) {
+      throw new Error('Exchange not initialized');
+    }
+
+    const trades = await this.exchange.fetchMyTrades(
+      input.symbol,
+      input.since,
+      input.limit,
+      input.until !== undefined ? { until: input.until } : {},
+    );
+
+    return trades.map((trade) => this.normalizeTrade(trade));
   }
 
   abstract withdraw(input: Parameters<ExchangeAdapter['withdraw']>[0]): ReturnType<ExchangeAdapter['withdraw']>;
