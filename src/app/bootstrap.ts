@@ -15,6 +15,7 @@ import { AddressBookRepo } from '../db/repo/address-book-repo';
 import { AssetRuleRepo } from '../db/repo/asset-rule-repo';
 import { CliAuthRepo } from '../db/repo/cli-auth-repo';
 import { CliAuthService } from '../services/cli-auth-service';
+import { MasterPasswordCacheService } from '../services/master-password-cache-service';
 
 const DEFAULT_ACCOUNT: AccountConfig = {
   name: 'default',
@@ -42,6 +43,7 @@ export interface AppContext {
   runtimeRepo: RuntimeRepo;
   cliAuthRepo: CliAuthRepo;
   cliAuthService: CliAuthService;
+  masterPasswordCacheService: MasterPasswordCacheService;
 }
 
 export function createAppContext(): AppContext {
@@ -55,6 +57,7 @@ export function createAppContext(): AppContext {
   const eventLogRepo = new EventLogRepo(db);
   const withdrawHistoryRepo = new WithdrawHistoryRepo(db);
   const cliAuthRepo = new CliAuthRepo(db);
+  const masterPasswordCacheService = new MasterPasswordCacheService();
 
   const configService = new ConfigService(accountRepo, assetRuleRepo, addressBookRepo);
   const cliAuthService = new CliAuthService(cliAuthRepo);
@@ -75,6 +78,7 @@ export function createAppContext(): AppContext {
     runtimeRepo,
     cliAuthRepo,
     cliAuthService,
+    masterPasswordCacheService,
   };
 }
 export { DEFAULT_ACCOUNT, EMPTY_CREDENTIALS, sealCredentials, createExchangeAdapter };

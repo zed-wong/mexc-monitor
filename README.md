@@ -65,14 +65,17 @@ The project now uses a single global CLI master password.
 
 - The master password is shared by the whole CLI, not by one account
 - The first credential write can initialize it automatically
+- Successful verification caches the master password locally for 24 hours in `data/master-password-cache.json` with `0600` permissions
+- You can clear that cache immediately with `auth clear-cache`
 - You can rotate it later with `auth set-master-password`
 - If `--master-password` is omitted, the CLI prompts securely in the terminal
 - The old `--password` flag still exists as a deprecated compatibility alias
 
-Check or rotate the master password:
+Check, clear, or rotate the master password:
 
 ```bash
 bun run src/index.ts auth status
+bun run src/index.ts auth clear-cache
 bun run src/index.ts auth set-master-password
 ```
 

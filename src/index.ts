@@ -1,4 +1,5 @@
 import { createAppContext, DEFAULT_ACCOUNT } from './app/bootstrap';
+import type { AppContext } from './app/bootstrap';
 import type { AccountConfig, AddressBookEntry, AssetRule, Credentials } from './core/types';
 import { Command, Option } from 'commander';
 import { createExchangeAdapter } from './exchange/exchange-factory';
@@ -593,16 +594,59 @@ async function promptMode(defaultValue: 'dry_run' | 'live'): Promise<'dry_run' |
   return value;
 }
 
-async function resolveMasterPassword(masterPassword: string | undefined, label: string): Promise<string> {
-  const resolved = masterPassword ?? await promptHiddenSecret(label);
+type ResolveMasterPasswordOptions = {
+  allowCache?: boolean;
+  persistToCache?: boolean;
+};
+
+async function resolveMasterPassword(
+  context: AppContext,
+  masterPassword: string | undefined,
+  label: string,
+  options: ResolveMasterPasswordOptions = {},
+): Promise<string> {
+  const allowCache = options.allowCache ?? true;
+  const persistToCache = options.persistToCache ?? true;
+
+  if (masterPassword) {
+    if (persistToCache) {
+      context.masterPasswordCacheService.remember(masterPassword);
+    }
+    return masterPassword;
+  }
+
+  if (allowCache) {
+    const cached = context.masterPasswordCacheService.getCachedPassword();
+    if (cached) {
+      if (context.cliAuthService.isConfigured()) {
+        try {
+          context.cliAuthService.verify(cached);
+          return cached;
+        } catch {
+          context.masterPasswordCacheService.clear();
+        }
+      } else {
+        return cached;
+      }
+    }
+  }
+
+  const resolved = await promptHiddenSecret(label);
   if (!resolved) {
     throw new Error('CLI master password cannot be empty.');
+  }
+
+  if (persistToCache) {
+    context.masterPasswordCacheService.remember(resolved);
   }
   return resolved;
 }
 
-async function resolveNewMasterPassword(newMasterPassword?: string): Promise<string> {
-  const resolved = await resolveMasterPassword(newMasterPassword, 'New CLI master password: ');
+async function resolveNewMasterPassword(context: AppContext, newMasterPassword?: string): Promise<string> {
+  const resolved = await resolveMasterPassword(context, newMasterPassword, 'New CLI master password: ', {
+    allowCache: false,
+    persistToCache: false,
+  });
   const confirmation = await promptHiddenSecret('Confirm new CLI master password: ');
   if (resolved !== confirmation) {
     throw new Error('CLI master password confirmation does not match.');
@@ -811,7 +855,7 @@ async function fetchAccountHealthCheck(
   summary: BalanceSummary;
 }> {
   const selectedAccount = resolveAccount(context, accountName);
-  const resolvedPassword = await resolveMasterPassword(password, promptLabel ?? 'CLI master password: ');
+  const resolvedPassword = await resolveMasterPassword(context, password, promptLabel ?? 'CLI master password: ');
   const credentials = context.credentialService.unlock(accountName, resolvedPassword);
   const exchange = createExchangeAdapter(selectedAccount.exchangeId);
   await exchange.init(credentials);
@@ -895,7 +939,7 @@ async function runMyTrades(
   },
 ): Promise<void> {
   const account = resolveAccount(context, options.accountName);
-  const resolvedPassword = await resolveMasterPassword(options.password, 'CLI master password: ');
+  const resolvedPassword = await resolveMasterPassword(context, options.password, 'CLI master password: ');
   const credentials = context.credentialService.unlock(options.accountName, resolvedPassword);
   const exchange = createExchangeAdapter(account.exchangeId);
   await exchange.init(credentials);
@@ -1017,7 +1061,7 @@ async function runWatchAll(
   intervalMs?: number,
   autoWithdraw = false,
 ): Promise<void> {
-  const resolvedPassword = await resolveMasterPassword(password, 'CLI master password for all accounts: ');
+  const resolvedPassword = await resolveMasterPassword(context, password, 'CLI master password for all accounts: ');
   let cycle = 0;
   const watchIntervalMs = intervalMs ?? DEFAULT_ACCOUNT.checkIntervalMs;
   for (;;) {
@@ -1200,7 +1244,7 @@ async function main(): Promise<void> {
 
     const providedMasterPassword = resolveMasterPasswordOption({ masterPassword, password });
     const resolvedPassword = wantsCredentialUpdate
-      ? await resolveMasterPassword(providedMasterPassword, 'CLI master password for ' + resolvedAccount + ': ')
+      ? await resolveMasterPassword(context, providedMasterPassword, 'CLI master password for ' + resolvedAccount + ': ')
       : undefined;
 
     const promptedCredentials = wantsCredentialUpdate
@@ -1243,7 +1287,7 @@ async function main(): Promise<void> {
     let failed = 0;
     let aggregateBalances: AssetBalance[] = [];
     process.stdout.write(`Checking ${pluralize(accounts.length, 'account')} concurrently.\n`);
-    const resolvedPassword = await resolveMasterPassword(masterPassword, 'CLI master password: ');
+    const resolvedPassword = await resolveMasterPassword(context, masterPassword, 'CLI master password: ');
     context.credentialService.unlock(accounts[0].name, resolvedPassword);
     if (showHealthText) {
       process.stdout.write('CLI master password verified. Starting account health checks now.\n');
@@ -1679,6 +1723,7 @@ async function main(): Promise<void> {
         checkIntervalMs: parsePositiveIntegerOption('interval-ms', intervalMs),
       });
       const resolvedPassword = await resolveMasterPassword(
+        context,
         resolveMasterPasswordOption({ masterPassword, password }),
         'CLI master password for ' + account + ': ',
       );
@@ -1723,6 +1768,7 @@ async function main(): Promise<void> {
       const selectedAccount = resolveAccount(context, account);
       assertLiveConfirmation(selectedAccount, confirmLive);
       const resolvedPassword = await resolveMasterPassword(
+        context,
         resolveMasterPasswordOption({ masterPassword, password }),
         'CLI master password for ' + account + ': ',
       );
@@ -1758,6 +1804,7 @@ async function main(): Promise<void> {
       });
       assertLiveConfirmation(selectedAccount, confirmLive);
       const resolvedPassword = await resolveMasterPassword(
+        context,
         resolveMasterPasswordOption({ masterPassword, password }),
         'CLI master password for ' + account + ': ',
       );
@@ -1779,6 +1826,7 @@ async function main(): Promise<void> {
       }
       assertLiveConfirmationForAccounts(accounts, confirmLive);
       const resolvedPassword = await resolveMasterPassword(
+        context,
         resolveMasterPasswordOption({ masterPassword, password }),
         'CLI master password for all accounts: ',
       );
@@ -1939,13 +1987,18 @@ async function main(): Promise<void> {
       const accountCount = context.configService.listAccounts().length;
       const requiresCurrentMasterPassword = context.cliAuthService.isConfigured() || accountCount > 0;
       const resolvedCurrentMasterPassword = requiresCurrentMasterPassword
-        ? await resolveMasterPassword(currentMasterPassword, accountCount > 0 ? 'Current CLI master password: ' : 'Existing CLI master password: ')
+        ? await resolveMasterPassword(
+          context,
+          currentMasterPassword,
+          accountCount > 0 ? 'Current CLI master password: ' : 'Existing CLI master password: ',
+        )
         : undefined;
-      const resolvedNewMasterPassword = await resolveNewMasterPassword(newMasterPassword);
+      const resolvedNewMasterPassword = await resolveNewMasterPassword(context, newMasterPassword);
       const rotatedAccounts = context.credentialService.rotateMasterPassword(
         resolvedCurrentMasterPassword,
         resolvedNewMasterPassword,
       );
+      context.masterPasswordCacheService.remember(resolvedNewMasterPassword);
 
       printSection('CLI master password updated', [
         requiresCurrentMasterPassword
@@ -1961,7 +2014,19 @@ async function main(): Promise<void> {
         context.cliAuthService.isConfigured()
           ? 'A CLI master password is configured.'
           : 'No CLI master password is configured yet.',
+        context.masterPasswordCacheService.getCachedPassword()
+          ? 'A local 24-hour master-password cache is active.'
+          : 'No local 24-hour master-password cache is active.',
         `Stored accounts: ${pluralize(context.configService.listAccounts().length, 'account')}.`,
+      ]);
+    });
+
+  authCommand.command('clear-cache')
+    .description('Clear the local cached CLI master password immediately')
+    .action(() => {
+      context.masterPasswordCacheService.clear();
+      printSection('CLI master password cache', [
+        'Cleared the local 24-hour cache.',
       ]);
     });
 
