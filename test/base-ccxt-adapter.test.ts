@@ -37,13 +37,23 @@ describe('BaseCcxtAdapter', () => {
           ETH: 1.25,
           USDT: '0',
         },
+        used: {
+          BTC: '0',
+          ETH: '0.75',
+          USDT: '0',
+        },
+        total: {
+          BTC: '0.00000001',
+          ETH: '2',
+          USDT: '0',
+        },
       }),
     } as unknown as Exchange;
 
     const adapter = new TestCcxtAdapter(exchange);
     await expect(adapter.fetchAllFreeBalances()).resolves.toEqual([
-      { asset: 'BTC', free: '0.00000001' },
-      { asset: 'ETH', free: '1.25' },
+      { asset: 'BTC', free: '0.00000001', used: '0', total: '0.00000001' },
+      { asset: 'ETH', free: '1.25', used: '0.75', total: '2' },
     ]);
   });
 

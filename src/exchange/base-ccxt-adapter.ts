@@ -2,7 +2,7 @@ import type { Exchange, Trade } from 'ccxt';
 
 import type { Credentials } from '../core/types';
 import { decimal } from '../utils/decimal';
-import type { ExchangeAdapter, MyTrade } from './types';
+import type { AssetBalance, ExchangeAdapter, MyTrade } from './types';
 
 export abstract class BaseCcxtAdapter implements ExchangeAdapter {
   abstract readonly id: string;
@@ -45,16 +45,29 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
     return balances.find((item) => item.asset === asset)?.free ?? '0';
   }
 
-  async fetchAllFreeBalances(): Promise<Array<{ asset: string; free: string }>> {
+  async fetchAllFreeBalances(): Promise<AssetBalance[]> {
     if (!this.exchange) {
       throw new Error('Exchange not initialized');
     }
 
     const balance = await this.exchange.fetchBalance();
     const freeBalances = balance.free as unknown as Record<string, string | number | undefined> | undefined;
-    return Object.entries(freeBalances ?? {})
-      .filter(([, free]) => free !== undefined && decimal(String(free)).gt(0))
-      .map(([asset, free]) => ({ asset, free: decimal(String(free)).toFixed() }));
+    const usedBalances = balance.used as unknown as Record<string, string | number | undefined> | undefined;
+    const totalBalances = balance.total as unknown as Record<string, string | number | undefined> | undefined;
+    const assets = new Set([
+      ...Object.keys(freeBalances ?? {}),
+      ...Object.keys(usedBalances ?? {}),
+      ...Object.keys(totalBalances ?? {}),
+    ]);
+
+    return [...assets]
+      .map((asset) => {
+        const free = decimal(String(freeBalances?.[asset] ?? '0')).toFixed();
+        const used = decimal(String(usedBalances?.[asset] ?? '0')).toFixed();
+        const total = decimal(String(totalBalances?.[asset] ?? decimal(free).plus(used).toFixed())).toFixed();
+        return { asset, free, used, total };
+      })
+      .filter((item) => decimal(item.total).gt(0));
   }
 
   async fetchQuotePrice(asset: string, quoteAsset: string): Promise<string | null> {

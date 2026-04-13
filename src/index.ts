@@ -2,6 +2,7 @@ import { createAppContext, DEFAULT_ACCOUNT } from './app/bootstrap';
 import type { AccountConfig, AddressBookEntry, AssetRule, Credentials } from './core/types';
 import { Command, Option } from 'commander';
 import { createExchangeAdapter } from './exchange/exchange-factory';
+import type { AssetBalance } from './exchange/types';
 import { WithdrawService } from './core/withdraw-service';
 import { RiskControl } from './core/risk-control';
 import { Monitor } from './core/monitor';
@@ -202,39 +203,118 @@ async function fetchUsdtQuote(
   }
 }
 
-async function formatBalancesWithUsdtValue(
-  exchange: Awaited<ReturnType<typeof initExchange>>,
-  balances: Array<{ asset: string; free: string }>,
-  indent = '',
-): Promise<string> {
-  if (balances.length === 0) {
-    return `${indent}No free balance returned by the exchange.\n`;
-  }
+type BalanceSummary = {
+  assetCount: number;
+  totalEstimatedUsdt: string;
+  hasEstimatedUsdt: boolean;
+};
 
+function padTableCell(value: string, width: number): string {
+  return value.padEnd(width);
+}
+
+function buildBalanceHeaderLine(left: string, right: string, width = 72): string {
+  if (left.length + right.length + 1 >= width) {
+    return `${left}  ${right}`;
+  }
+  return left + ' '.repeat(width - left.length - right.length) + right;
+}
+
+function formatEstimatedValue(value?: string): string {
+  return value ?? 'unavailable';
+}
+
+function formatAssetBalanceColumns(item: AssetBalance, estimatedValue?: string): string {
+  return [
+    padTableCell(item.asset, 12),
+    padTableCell(item.free, 16),
+    padTableCell(item.used, 16),
+    padTableCell(item.total, 16),
+    formatEstimatedValue(estimatedValue),
+  ].join('');
+}
+
+function printBalanceBlockHeader(
+  title: string,
+  meta: string,
+  separator: '-' | '=' = '-',
+  indent = '  ',
+): void {
+  const line = separator.repeat(72);
+  process.stdout.write(`\n${indent}${line}\n`);
+  process.stdout.write(`${indent}${buildBalanceHeaderLine(title, meta)}\n`);
+  process.stdout.write(`${indent}${line}\n`);
+}
+
+async function summarizeBalancesWithUsdtValue(
+  exchange: Awaited<ReturnType<typeof initExchange>>,
+  balances: AssetBalance[],
+): Promise<BalanceSummary> {
   let totalUsdt = decimal(0);
   let hasEstimate = false;
-  const lines: string[] = [];
 
   for (const item of balances) {
     const quote = await fetchUsdtQuote(exchange, item.asset);
-    const estimatedValue = quote ? decimal(item.free).mul(quote.price).toFixed() : undefined;
+    const estimatedValue = quote ? decimal(item.total).mul(quote.price).toFixed() : undefined;
     if (estimatedValue) {
       totalUsdt = totalUsdt.plus(estimatedValue);
       hasEstimate = true;
     }
-    lines.push(`${indent}${item.asset.padEnd(12)} ${item.free}${estimatedValue ? `  (~${estimatedValue} USDT)` : ''}`);
   }
 
-  lines.push(`${indent}Total estimated value: ${hasEstimate ? `${totalUsdt.toFixed()} USDT` : 'unavailable'}`);
+  return {
+    assetCount: balances.length,
+    totalEstimatedUsdt: totalUsdt.toFixed(),
+    hasEstimatedUsdt: hasEstimate,
+  };
+}
+
+async function formatBalancesWithUsdtValue(
+  exchange: Awaited<ReturnType<typeof initExchange>>,
+  balances: AssetBalance[],
+  indent = '',
+): Promise<string> {
+  if (balances.length === 0) {
+    return `${indent}No balance returned by the exchange.\n`;
+  }
+
+  const lines: string[] = [
+    `${indent}${padTableCell('ASSET', 12)}${padTableCell('FREE', 16)}${padTableCell('USED', 16)}${padTableCell('TOTAL', 16)}EST. VALUE`,
+  ];
+
+  for (const item of balances) {
+    const quote = await fetchUsdtQuote(exchange, item.asset);
+    const estimatedValue = quote ? decimal(item.total).mul(quote.price).toFixed() : undefined;
+    lines.push(`${indent}${formatAssetBalanceColumns(item, estimatedValue)}`);
+  }
+
   return `${lines.join('\n')}\n`;
 }
 
 async function printBalancesWithUsdtValue(
   exchange: Awaited<ReturnType<typeof initExchange>>,
-  balances: Array<{ asset: string; free: string }>,
+  balances: AssetBalance[],
   indent = '',
 ): Promise<void> {
   process.stdout.write(await formatBalancesWithUsdtValue(exchange, balances, indent));
+}
+
+function mergeBalances(left: AssetBalance[], right: AssetBalance[]): AssetBalance[] {
+  const merged = new Map(left.map((item) => [item.asset, { ...item }]));
+
+  for (const item of right) {
+    const existing = merged.get(item.asset);
+    if (!existing) {
+      merged.set(item.asset, { ...item });
+      continue;
+    }
+
+    existing.free = decimal(existing.free).plus(item.free).toFixed();
+    existing.used = decimal(existing.used).plus(item.used).toFixed();
+    existing.total = decimal(existing.total).plus(item.total).toFixed();
+  }
+
+  return [...merged.values()].sort((a, b) => a.asset.localeCompare(b.asset));
 }
 
 
@@ -416,14 +496,11 @@ function printWatchCycleHeader(title: string, details: string[]): void {
   }
 }
 
-function printBalanceReadHeader(account: AccountConfig, assetCount: number): void {
-  printDivider();
-  printSection(`${account.name}`, [
-    `Read at           ${new Date().toISOString()}`,
-    `Exchange          ${account.exchangeId}`,
-    `Mode              ${account.mode}`,
-    `Assets            ${assetCount}`,
-  ]);
+function printBalanceReadHeader(account: AccountConfig, summary: BalanceSummary): void {
+  printBalanceBlockHeader(
+    `${account.name} (${account.exchangeId})`,
+    `mode=${account.mode}   est=${summary.hasEstimatedUsdt ? `${summary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+  );
 }
 
 async function promptHiddenSecret(label: string): Promise<string> {
@@ -730,7 +807,8 @@ async function fetchAccountHealthCheck(
 ): Promise<{
   account: AccountConfig;
   exchange: Awaited<ReturnType<typeof createExchangeAdapter>>;
-  balances: Array<{ asset: string; free: string }>;
+  balances: AssetBalance[];
+  summary: BalanceSummary;
 }> {
   const selectedAccount = resolveAccount(context, accountName);
   const resolvedPassword = await resolveMasterPassword(password, promptLabel ?? 'CLI master password: ');
@@ -739,11 +817,13 @@ async function fetchAccountHealthCheck(
   await exchange.init(credentials);
   await exchange.healthCheck();
   const balances = await exchange.fetchAllFreeBalances();
+  const summary = await summarizeBalancesWithUsdtValue(exchange, balances);
 
   return {
     account: selectedAccount,
     exchange,
     balances,
+    summary,
   };
 }
 
@@ -756,7 +836,7 @@ async function runAccountHealthCheck(
   const result = await fetchAccountHealthCheck(context, accountName, password, promptLabel);
 
   process.stdout.write(`Account ${result.account.name} is healthy on ${result.account.exchangeId}. Mode: ${result.account.mode}.\n`);
-  process.stdout.write(`Free balances: ${pluralize(result.balances.length, 'asset')}.\n`);
+  process.stdout.write(`Balances: ${pluralize(result.summary.assetCount, 'asset')}. Estimated value: ${result.summary.hasEstimatedUsdt ? `${result.summary.totalEstimatedUsdt} USDT` : 'unavailable'}.\n`);
   await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
 }
 
@@ -768,9 +848,11 @@ async function runBalanceCheck(
 ): Promise<void> {
   const result = await fetchAccountHealthCheck(context, accountName, password, promptLabel);
 
-  process.stdout.write(`${result.account.name} (${result.account.exchangeId})\n`);
-  process.stdout.write(`  Mode: ${result.account.mode}\n`);
-  await printBalancesWithUsdtValue(result.exchange, result.balances, '  ');
+  printBalanceBlockHeader(
+    `${result.account.name} (${result.account.exchangeId})`,
+    `mode=${result.account.mode}   est=${result.summary.hasEstimatedUsdt ? `${result.summary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+  );
+  process.stdout.write(await formatBalancesWithUsdtValue(result.exchange, result.balances, '  '));
 }
 
 function printMyTradeEntry(item: {
@@ -942,6 +1024,7 @@ async function runWatchAll(
     cycle += 1;
     try {
       const accounts = context.configService.listAccounts();
+      let aggregateBalances: AssetBalance[] = [];
       printWatchCycleHeader('Balance watch: all accounts', [
         `Cycle             ${cycle}`,
         `Started at        ${new Date().toISOString()}`,
@@ -955,7 +1038,8 @@ async function runWatchAll(
         const credentials = context.credentialService.unlock(account.name, resolvedPassword);
         const exchange = await initExchange(credentials);
         const balances = await exchange.fetchAllFreeBalances();
-        const balancesText = await formatBalancesWithUsdtValue(exchange, balances, '    ');
+        const summary = await summarizeBalancesWithUsdtValue(exchange, balances);
+        const balancesText = await formatBalancesWithUsdtValue(exchange, balances, '  ');
 
         let noEnabledRules = false;
         if (autoWithdraw) {
@@ -971,7 +1055,8 @@ async function runWatchAll(
 
         return {
           selectedAccount,
-          assetCount: balances.length,
+          balances,
+          summary,
           balancesText,
           noEnabledRules,
         };
@@ -984,11 +1069,23 @@ async function runWatchAll(
           );
           continue;
         }
-        printBalanceReadHeader(result.value.selectedAccount, result.value.assetCount);
+        aggregateBalances = mergeBalances(aggregateBalances, result.value.balances);
+        printBalanceReadHeader(result.value.selectedAccount, result.value.summary);
         process.stdout.write(result.value.balancesText);
         if (result.value.noEnabledRules) {
           process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
         }
+      }
+
+      if (aggregateBalances.length > 0) {
+        const aggregateExchange = await initExchange(context.credentialService.unlock(accounts[0].name, resolvedPassword));
+        const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateExchange, aggregateBalances);
+        printBalanceBlockHeader(
+          'ALL ACCOUNTS TOTAL',
+          `accounts=${accounts.length}    est=${aggregateSummary.hasEstimatedUsdt ? `${aggregateSummary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+          '=',
+        );
+        process.stdout.write(await formatBalancesWithUsdtValue(aggregateExchange, aggregateBalances, '  '));
       }
     } catch (error) {
       process.stderr.write(
@@ -1144,6 +1241,7 @@ async function main(): Promise<void> {
 
     let passed = 0;
     let failed = 0;
+    let aggregateBalances: AssetBalance[] = [];
     process.stdout.write(`Checking ${pluralize(accounts.length, 'account')} concurrently.\n`);
     const resolvedPassword = await resolveMasterPassword(masterPassword, 'CLI master password: ');
     context.credentialService.unlock(accounts[0].name, resolvedPassword);
@@ -1176,12 +1274,14 @@ async function main(): Promise<void> {
       if (settled.value.ok) {
         passed += 1;
         const result = settled.value.result;
-        process.stdout.write(`\n${result.account.name} (${result.account.exchangeId})\n`);
+        aggregateBalances = mergeBalances(aggregateBalances, result.balances);
         if (showHealthText) {
-          process.stdout.write(`  Health check passed. Mode: ${result.account.mode}.\n`);
-        } else {
-          process.stdout.write(`  Mode: ${result.account.mode}\n`);
+          process.stdout.write(`\nHealth check passed for ${result.account.name}.\n`);
         }
+        printBalanceBlockHeader(
+          `${result.account.name} (${result.account.exchangeId})`,
+          `mode=${result.account.mode}   est=${result.summary.hasEstimatedUsdt ? `${result.summary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+        );
         process.stdout.write(settled.value.balancesText);
         continue;
       }
@@ -1189,6 +1289,17 @@ async function main(): Promise<void> {
       failed += 1;
       process.stdout.write(`\n${settled.value.account.name} (${settled.value.account.exchangeId})\n`);
       process.stdout.write(`  Health check failed: ${settled.value.error}\n`);
+    }
+
+    if (aggregateBalances.length > 0) {
+      const aggregateExchange = await initExchange(context.credentialService.unlock(accounts[0].name, resolvedPassword));
+      const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateExchange, aggregateBalances);
+      printBalanceBlockHeader(
+        'ALL ACCOUNTS TOTAL',
+        `accounts=${passed}    est=${aggregateSummary.hasEstimatedUsdt ? `${aggregateSummary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+        '=',
+      );
+      process.stdout.write(await formatBalancesWithUsdtValue(aggregateExchange, aggregateBalances, '  '));
     }
 
     if (showHealthText) {

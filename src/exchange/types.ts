@@ -34,6 +34,8 @@ export interface MyTrade {
 export interface AssetBalance {
   asset: string;
   free: string;
+  used: string;
+  total: string;
 }
 
 export interface ExchangeAdapter {
