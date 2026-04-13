@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "bun run src/index.ts",
+    "fetch:mexc-trades": "bun run src/scripts/fetch-mexc-trades.ts",
     "lint": "eslint . --ext .ts",
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
