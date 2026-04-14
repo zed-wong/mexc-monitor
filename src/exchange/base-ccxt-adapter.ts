@@ -7,6 +7,7 @@ import type { AssetBalance, ExchangeAdapter, MyTrade } from './types';
 export abstract class BaseCcxtAdapter implements ExchangeAdapter {
   abstract readonly id: string;
   protected exchange?: Exchange;
+  private readonly quotePriceCache = new Map<string, Promise<string | null>>();
 
   protected abstract createExchange(credentials: Credentials): Exchange;
 
@@ -37,6 +38,7 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
 
   async init(credentials: Credentials): Promise<void> {
     this.exchange = this.createExchange(credentials);
+    this.quotePriceCache.clear();
     await this.exchange.loadMarkets();
   }
 
@@ -80,18 +82,32 @@ export abstract class BaseCcxtAdapter implements ExchangeAdapter {
     }
 
     const symbol = `${asset}/${quoteAsset}`;
+    const cached = this.quotePriceCache.get(symbol);
+    if (cached) {
+      return cached;
+    }
+
     if (!(symbol in this.exchange.markets)) {
       return null;
     }
 
-    const ticker = await this.exchange.fetchTicker(symbol);
-    const price = typeof ticker.last === 'number' || typeof ticker.last === 'string'
-      ? ticker.last
-      : typeof ticker.close === 'number' || typeof ticker.close === 'string'
-        ? ticker.close
-        : undefined;
+    const pricePromise = this.exchange.fetchTicker(symbol)
+      .then((ticker) => {
+        const price = typeof ticker.last === 'number' || typeof ticker.last === 'string'
+          ? ticker.last
+          : typeof ticker.close === 'number' || typeof ticker.close === 'string'
+            ? ticker.close
+            : undefined;
 
-    return price !== undefined ? decimal(String(price)).toFixed() : null;
+        return price !== undefined ? decimal(String(price)).toFixed() : null;
+      })
+      .catch((error) => {
+        this.quotePriceCache.delete(symbol);
+        throw error;
+      });
+
+    this.quotePriceCache.set(symbol, pricePromise);
+    return pricePromise;
   }
 
   async fetchMyTrades(input: { symbol: string; since?: number; until?: number; limit?: number }): Promise<MyTrade[]> {

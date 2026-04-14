@@ -71,6 +71,34 @@ describe('BaseCcxtAdapter', () => {
     await expect(adapter.fetchQuotePrice('BTC', 'USDT')).resolves.toBe('63000.12345678');
   });
 
+  test('caches quote price requests for the same symbol', async () => {
+    let calls = 0;
+    const exchange = {
+      markets: {
+        'BTC/USDT': {},
+      },
+      fetchTicker: async () => {
+        calls += 1;
+        return {
+          last: '63000.12345678',
+        };
+      },
+    } as unknown as Exchange;
+
+    const adapter = new TestCcxtAdapter(exchange);
+
+    await expect(Promise.all([
+      adapter.fetchQuotePrice('BTC', 'USDT'),
+      adapter.fetchQuotePrice('BTC', 'USDT'),
+      adapter.fetchQuotePrice('BTC', 'USDT'),
+    ])).resolves.toEqual([
+      '63000.12345678',
+      '63000.12345678',
+      '63000.12345678',
+    ]);
+    expect(calls).toBe(1);
+  });
+
   test('normalizes my trades into stable string fields', async () => {
     const exchange = {
       fetchMyTrades: async () => ([
