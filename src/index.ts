@@ -211,8 +211,11 @@ type BalanceSummary = {
 };
 
 type ValuedAssetBalance = AssetBalance & {
+  quotePrice?: string;
   estimatedValue?: string;
 };
+
+type QuotePriceCache = Map<string, string | null>;
 
 function padTableCell(value: string, width: number): string {
   return value.padEnd(width);
@@ -280,6 +283,42 @@ async function valueBalancesWithUsdt(
     const estimatedValue = quote ? decimal(item.total).mul(quote.price).toFixed() : undefined;
     return {
       ...item,
+      quotePrice: quote?.price,
+      estimatedValue,
+    };
+  }));
+}
+
+function collectQuotePriceCache(
+  cache: QuotePriceCache,
+  balances: ValuedAssetBalance[],
+): void {
+  for (const item of balances) {
+    if (item.quotePrice) {
+      cache.set(item.asset, item.quotePrice);
+    }
+  }
+}
+
+async function valueBalancesWithCachedUsdt(
+  balances: AssetBalance[],
+  quotePrices: QuotePriceCache,
+  exchange?: Awaited<ReturnType<typeof initExchange>>,
+): Promise<ValuedAssetBalance[]> {
+  return Promise.all(balances.map(async (item) => {
+    let quotePrice = quotePrices.get(item.asset);
+
+    if (quotePrice === undefined && exchange) {
+      const quote = await fetchUsdtQuote(exchange, item.asset);
+      quotePrice = quote?.price ?? null;
+      quotePrices.set(item.asset, quotePrice);
+    }
+
+    const estimatedValue = quotePrice ? decimal(item.total).mul(quotePrice).toFixed() : undefined;
+
+    return {
+      ...item,
+      quotePrice: quotePrice ?? undefined,
       estimatedValue,
     };
   }));
@@ -1083,6 +1122,8 @@ async function runWatchAll(
     try {
       const accounts = context.configService.listAccounts();
       let aggregateBalances: AssetBalance[] = [];
+      const aggregateQuotePrices: QuotePriceCache = new Map();
+      let aggregateExchange: Awaited<ReturnType<typeof initExchange>> | undefined;
       printWatchCycleHeader('Balance watch: all accounts', [
         `Cycle             ${cycle}`,
         `Started at        ${new Date().toISOString()}`,
@@ -1114,7 +1155,9 @@ async function runWatchAll(
 
         return {
           selectedAccount,
+          exchange,
           balances,
+          valuedBalances,
           summary,
           balancesText,
           noEnabledRules,
@@ -1129,6 +1172,8 @@ async function runWatchAll(
           continue;
         }
         aggregateBalances = mergeBalances(aggregateBalances, result.value.balances);
+        collectQuotePriceCache(aggregateQuotePrices, result.value.valuedBalances);
+        aggregateExchange ??= result.value.exchange;
         printBalanceReadHeader(result.value.selectedAccount, result.value.summary);
         process.stdout.write(result.value.balancesText);
         if (result.value.noEnabledRules) {
@@ -1137,8 +1182,7 @@ async function runWatchAll(
       }
 
       if (aggregateBalances.length > 0) {
-        const aggregateExchange = await initExchange(context.credentialService.unlock(accounts[0].name, resolvedPassword));
-        const aggregateValuedBalances = await valueBalancesWithUsdt(aggregateExchange, aggregateBalances);
+        const aggregateValuedBalances = await valueBalancesWithCachedUsdt(aggregateBalances, aggregateQuotePrices, aggregateExchange);
         const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateValuedBalances);
         printBalanceBlockHeader(
           'ALL ACCOUNTS TOTAL',
@@ -1302,6 +1346,8 @@ async function main(): Promise<void> {
     let passed = 0;
     let failed = 0;
     let aggregateBalances: AssetBalance[] = [];
+    const aggregateQuotePrices: QuotePriceCache = new Map();
+    let aggregateExchange: Awaited<ReturnType<typeof initExchange>> | undefined;
     process.stdout.write(`Checking ${pluralize(accounts.length, 'account')} concurrently.\n`);
     const resolvedPassword = await resolveMasterPassword(context, masterPassword, 'CLI master password: ');
     context.credentialService.unlock(accounts[0].name, resolvedPassword);
@@ -1335,6 +1381,8 @@ async function main(): Promise<void> {
         passed += 1;
         const result = settled.value.result;
         aggregateBalances = mergeBalances(aggregateBalances, result.balances);
+        collectQuotePriceCache(aggregateQuotePrices, result.valuedBalances);
+        aggregateExchange ??= result.exchange;
         if (showHealthText) {
           process.stdout.write(`\nHealth check passed for ${result.account.name}.\n`);
         }
@@ -1352,8 +1400,7 @@ async function main(): Promise<void> {
     }
 
     if (aggregateBalances.length > 0) {
-      const aggregateExchange = await initExchange(context.credentialService.unlock(accounts[0].name, resolvedPassword));
-      const aggregateValuedBalances = await valueBalancesWithUsdt(aggregateExchange, aggregateBalances);
+      const aggregateValuedBalances = await valueBalancesWithCachedUsdt(aggregateBalances, aggregateQuotePrices, aggregateExchange);
       const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateValuedBalances);
       printBalanceBlockHeader(
         'ALL ACCOUNTS TOTAL',
