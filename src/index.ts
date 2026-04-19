@@ -1136,64 +1136,79 @@ async function runWatchAll(
         `Auto withdraw     ${autoWithdraw ? 'on' : 'off'}`,
       ]);
 
-      const results = await Promise.allSettled(accounts.map(async (account) => {
-        const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
-        const credentials = context.credentialService.unlock(account.name, resolvedPassword);
-        const exchange = await initExchange(credentials);
-        const balances = await exchange.fetchAllFreeBalances();
-        const valuedBalances = await valueBalancesWithUsdt(exchange, balances);
-        const summary = await summarizeBalancesWithUsdtValue(valuedBalances);
-        const balancesText = formatValuedBalances(valuedBalances, '  ');
+      const results = await Promise.all(accounts.map(async (account) => {
+        try {
+          const selectedAccount = buildAccountConfig({ ...account, checkIntervalMs: intervalMs ?? account.checkIntervalMs });
+          const credentials = context.credentialService.unlock(account.name, resolvedPassword);
+          const exchange = await initExchange(credentials);
+          const balances = await exchange.fetchAllFreeBalances();
+          const valuedBalances = await valueBalancesWithUsdt(exchange, balances);
+          const summary = await summarizeBalancesWithUsdtValue(valuedBalances);
+          const balancesText = formatValuedBalances(valuedBalances, '  ');
 
-        let noEnabledRules = false;
-        if (autoWithdraw) {
-          const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
-          noEnabledRules = rules.length === 0;
-          for (const rule of rules) {
-            const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
-            const riskControl = new RiskControl();
-            const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
-            await monitor.tick(selectedAccount, rule, credentials);
+          let noEnabledRules = false;
+          if (autoWithdraw) {
+            const rules = context.configService.listAssetRules(account.name).filter((item) => item.enabled);
+            noEnabledRules = rules.length === 0;
+            for (const rule of rules) {
+              const withdrawService = new WithdrawService(exchange, context.auditService, context.runtimeService);
+              const riskControl = new RiskControl();
+              const monitor = new Monitor(exchange, context.runtimeService, withdrawService, context.auditService, riskControl);
+              await monitor.tick(selectedAccount, rule, credentials);
+            }
           }
-        }
 
-        return {
-          selectedAccount,
-          exchange,
-          balances,
-          valuedBalances,
-          summary,
-          balancesText,
-          noEnabledRules,
-        };
+          return {
+            ok: true as const,
+            selectedAccount,
+            exchange,
+            balances,
+            valuedBalances,
+            summary,
+            balancesText,
+            noEnabledRules,
+          };
+        } catch (error) {
+          return {
+            ok: false as const,
+            accountName: account.name,
+            error,
+          };
+        }
       }));
 
-      for (const [index, result] of results.entries()) {
-        if (result.status === 'rejected') {
+      for (const result of results) {
+        if (!result.ok) {
           process.stderr.write(
-            `Watch warning: account ${accounts[index]?.name ?? '?'} failed during cycle ${cycle}: ${formatErrorMessage(result.reason)}\n`,
+            `Watch warning: account ${result.accountName} failed during cycle ${cycle}: ${formatErrorMessage(result.error)}\n`,
           );
           continue;
         }
-        aggregateBalances = mergeBalances(aggregateBalances, result.value.balances);
-        collectQuotePriceCache(aggregateQuotePrices, result.value.valuedBalances);
-        aggregateExchange ??= result.value.exchange;
-        printBalanceReadHeader(result.value.selectedAccount, result.value.summary);
-        process.stdout.write(result.value.balancesText);
-        if (result.value.noEnabledRules) {
+        aggregateBalances = mergeBalances(aggregateBalances, result.balances);
+        collectQuotePriceCache(aggregateQuotePrices, result.valuedBalances);
+        aggregateExchange ??= result.exchange;
+        printBalanceReadHeader(result.selectedAccount, result.summary);
+        process.stdout.write(result.balancesText);
+        if (result.noEnabledRules) {
           process.stdout.write('    No enabled asset rules. Skipping withdraw checks.\n');
         }
       }
 
       if (aggregateBalances.length > 0) {
-        const aggregateValuedBalances = await valueBalancesWithCachedUsdt(aggregateBalances, aggregateQuotePrices, aggregateExchange);
-        const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateValuedBalances);
-        printBalanceBlockHeader(
-          'ALL ACCOUNTS TOTAL',
-          `accounts=${accounts.length}    est=${aggregateSummary.hasEstimatedUsdt ? `${aggregateSummary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
-          '=',
-        );
-        process.stdout.write(formatValuedBalances(aggregateValuedBalances, '  '));
+        try {
+          const aggregateValuedBalances = await valueBalancesWithCachedUsdt(aggregateBalances, aggregateQuotePrices, aggregateExchange);
+          const aggregateSummary = await summarizeBalancesWithUsdtValue(aggregateValuedBalances);
+          printBalanceBlockHeader(
+            'ALL ACCOUNTS TOTAL',
+            `accounts=${accounts.length}    est=${aggregateSummary.hasEstimatedUsdt ? `${aggregateSummary.totalEstimatedUsdt} USDT` : 'unavailable'}`,
+            '=',
+          );
+          process.stdout.write(formatValuedBalances(aggregateValuedBalances, '  '));
+        } catch (error) {
+          process.stderr.write(
+            `Watch warning: failed to render aggregate totals during cycle ${cycle}: ${formatErrorMessage(error)}\n`,
+          );
+        }
       }
     } catch (error) {
       process.stderr.write(
