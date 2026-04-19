@@ -22,7 +22,7 @@ Examples:
   mexc-monitor auth set-master-password
   mexc-monitor balance check-one -a main --master-password '***'
   mexc-monitor balance check-all --master-password '***'
-  mexc-monitor balance check-all-loop --interval-ms 30000 --master-password '***'
+  mexc-monitor balance check-all-loop --interval 30 --master-password '***'
   mexc-monitor withdraw check-one -a main --master-password '***'
   mexc-monitor withdraw check-one-loop -a main --interval-ms 30000 --master-password '***'
 `;
@@ -777,6 +777,10 @@ function parsePositiveIntegerOption(name: string, value: string): number {
     throw new Error(`${name} must be greater than 0`);
   }
   return parsed;
+}
+
+function parsePositiveIntervalSecondsOption(name: string, value: string): number {
+  return parsePositiveIntegerOption(name, value) * 1000;
 }
 
 function buildAccountConfig(options?: Partial<AccountConfig>): AccountConfig {
@@ -1805,9 +1809,9 @@ async function main(): Promise<void> {
   addMasterPasswordOption(balanceCommand
     .command('check-all-loop')
     .description('Continuously print balances for all configured accounts')
-    .option('--interval-ms <intervalMs>'))
-    .action(async ({ masterPassword, password, intervalMs }: {
-      masterPassword?: string; password?: string; intervalMs?: string;
+    .option('--interval <seconds>', 'Loop interval in seconds'))
+    .action(async ({ masterPassword, password, interval }: {
+      masterPassword?: string; password?: string; interval?: string;
     }) => {
       const accounts = context.configService.listAccounts();
       if (accounts.length === 0) {
@@ -1816,7 +1820,7 @@ async function main(): Promise<void> {
       await runWatchAll(
         context,
         resolveMasterPasswordOption({ masterPassword, password }),
-        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
+        interval ? parsePositiveIntervalSecondsOption('interval', interval) : undefined,
         false,
       );
     });
@@ -1921,10 +1925,10 @@ async function main(): Promise<void> {
   addMasterPasswordOption(withdrawCommand
     .command('check-all-loop')
     .description('Continuously monitor and withdraw for every configured account')
-    .option('--interval-ms <intervalMs>')
+    .option('--interval <seconds>', 'Loop interval in seconds')
     .option('--confirm-live'))
-    .action(async ({ masterPassword, password, intervalMs, confirmLive }: {
-      masterPassword?: string; password?: string; intervalMs?: string; confirmLive?: boolean;
+    .action(async ({ masterPassword, password, interval, confirmLive }: {
+      masterPassword?: string; password?: string; interval?: string; confirmLive?: boolean;
     }) => {
       const accounts = context.configService.listAccounts();
       if (accounts.length === 0) {
@@ -1934,7 +1938,7 @@ async function main(): Promise<void> {
       await runWatchAll(
         context,
         resolveMasterPasswordOption({ masterPassword, password }),
-        intervalMs ? parsePositiveIntegerOption('interval-ms', intervalMs) : undefined,
+        interval ? parsePositiveIntervalSecondsOption('interval', interval) : undefined,
         true,
       );
     });

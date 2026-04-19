@@ -241,17 +241,17 @@ bun run src/index.ts withdraw check-one-loop -a main --interval-ms 30000
 
 ```bash
 bun run src/index.ts balance check-all
-bun run src/index.ts balance check-all-loop
+bun run src/index.ts balance check-all-loop --interval 30
 bun run src/index.ts withdraw check-all
-bun run src/index.ts withdraw check-all-loop
+bun run src/index.ts withdraw check-all-loop --interval 30
 ```
 
 Non-interactive multi-account examples:
 
 ```bash
-bun run src/index.ts balance check-all-loop --master-password 'your-cli-master-password'
+bun run src/index.ts balance check-all-loop --interval 30 --master-password 'your-cli-master-password'
 bun run src/index.ts withdraw check-all --master-password 'your-cli-master-password'
-bun run src/index.ts withdraw check-all-loop --master-password 'your-cli-master-password'
+bun run src/index.ts withdraw check-all-loop --interval 30 --master-password 'your-cli-master-password'
 ```
 
 For `live` accounts, add `--confirm-live` to `withdraw check-one`, `withdraw check-all`, `withdraw check-one-loop`, and `withdraw check-all-loop`.

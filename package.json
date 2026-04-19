@@ -1,6 +1,6 @@
 {
   "name": "mexc-monitor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI-based exchange balance monitor",
   "bin": {
     "mexc-monitor":"./dist/index.js"
